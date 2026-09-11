@@ -1,0 +1,6 @@
+{
+  "name": "EcoSort AI - Phân Loại Rác Tích Điểm",
+  "description": "Hệ thống AI nhận diện và phân loại rác thông minh tích điểm, bảng xếp hạng và giao diện trình chiếu STEM.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
