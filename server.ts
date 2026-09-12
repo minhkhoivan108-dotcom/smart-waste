@@ -253,6 +253,194 @@ ${hint ? `Gợi ý nhận diện từ hệ thống: ${hint}` : ""}`;
   }
 });
 
+// ==============================================================================
+// GOOGLE SHEETS PROXY API
+// ==============================================================================
+let activeGoogleScriptUrl: string =
+  process.env.GOOGLE_SHEETS_SCRIPT_URL ||
+  process.env.VITE_GOOGLE_SHEETS_SCRIPT_URL ||
+  "";
+
+// 1. Get current Google Sheets config
+app.get("/api/sheets/config", (_req, res) => {
+  res.json({
+    configured: Boolean(activeGoogleScriptUrl && activeGoogleScriptUrl.startsWith("http")),
+    url: activeGoogleScriptUrl,
+  });
+});
+
+// 2. Set / Update Google Sheets Web App URL in runtime
+app.post("/api/sheets/config", (req, res) => {
+  const { url } = req.body;
+  if (typeof url === "string") {
+    activeGoogleScriptUrl = url.trim();
+    return res.json({ success: true, url: activeGoogleScriptUrl });
+  }
+  return res.status(400).json({ error: "URL không hợp lệ" });
+});
+
+// 3. Test connection to Google Apps Script
+app.post("/api/sheets/test", async (req, res) => {
+  try {
+    const urlToTest = req.body.url || activeGoogleScriptUrl;
+    if (!urlToTest) {
+      return res.status(400).json({ success: false, error: "Chưa cung cấp URL để kiểm tra" });
+    }
+
+    const response = await fetch(urlToTest, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      redirect: "follow",
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        error: `Google Sheets trả về mã lỗi HTTP ${response.status}`,
+      });
+    }
+
+    const data: any = await response.json();
+    if (data.status === "success") {
+      // Auto-save verified URL
+      activeGoogleScriptUrl = urlToTest;
+      return res.json({
+        success: true,
+        sheetTitle: data.sheetTitle || "Google Sheets EcoSort",
+        totalPlayers: data.players ? data.players.length : 0,
+        totalScans: data.history ? data.history.length : 0,
+      });
+    } else {
+      return res.json({
+        success: false,
+        error: data.message || "Apps Script không trả về status: success",
+      });
+    }
+  } catch (err: any) {
+    return res.json({
+      success: false,
+      error: `Lỗi kết nối tới Google Sheets: ${err.message}`,
+    });
+  }
+});
+
+// 4. Get Leaderboard and Classification History from Google Sheets
+app.get("/api/sheets/data", async (_req, res) => {
+  if (!activeGoogleScriptUrl) {
+    return res.json({
+      status: "unconfigured",
+      message: "Chưa cấu hình Google Apps Script URL",
+      players: [],
+      history: [],
+    });
+  }
+
+  try {
+    const response = await fetch(activeGoogleScriptUrl, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      redirect: "follow",
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        status: "error",
+        message: `HTTP ${response.status} từ Google Sheets`,
+        players: [],
+        history: [],
+      });
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({
+      status: "error",
+      message: `Không thể lấy dữ liệu từ Google Sheets: ${err.message}`,
+      players: [],
+      history: [],
+    });
+  }
+});
+
+// 5. Record new waste classification (+1, +2, +3 points) to Google Sheets
+app.post("/api/sheets/record", async (req, res) => {
+  if (!activeGoogleScriptUrl) {
+    return res.status(400).json({
+      status: "error",
+      message: "Chưa cấu hình Google Apps Script URL",
+    });
+  }
+
+  try {
+    const payload = {
+      action: "recordWaste",
+      ...req.body,
+    };
+
+    const response = await fetch(activeGoogleScriptUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      redirect: "follow",
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        status: "error",
+        message: `HTTP ${response.status} khi gửi dữ liệu lên Google Sheets`,
+      });
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({
+      status: "error",
+      message: `Lỗi gửi điểm đến Google Sheets: ${err.message}`,
+    });
+  }
+});
+
+// 6. Register new player in Google Sheets with 0 points
+app.post("/api/sheets/register", async (req, res) => {
+  if (!activeGoogleScriptUrl) {
+    return res.status(400).json({
+      status: "error",
+      message: "Chưa cấu hình Google Apps Script URL",
+    });
+  }
+
+  try {
+    const payload = {
+      action: "registerPlayer",
+      ...req.body,
+    };
+
+    const response = await fetch(activeGoogleScriptUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      redirect: "follow",
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        status: "error",
+        message: `HTTP ${response.status} khi đăng ký người chơi trên Google Sheets`,
+      });
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({
+      status: "error",
+      message: `Lỗi đăng ký người chơi: ${err.message}`,
+    });
+  }
+});
+
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

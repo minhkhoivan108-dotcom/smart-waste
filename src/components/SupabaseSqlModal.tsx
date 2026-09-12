@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Database, Copy, Check, X, ShieldCheck, Key, RefreshCw, Terminal, ExternalLink } from 'lucide-react';
-import { isSupabaseConfigured } from '../lib/supabase';
+import { Database, Copy, Check, X, ShieldCheck, Key, RefreshCw, Terminal, ExternalLink, CheckCircle2, AlertCircle } from 'lucide-react';
+import { isSupabaseConfigured, getEffectiveSupabaseConfig, getSupabase } from '../lib/supabase';
 import { playClickSound } from '../utils/audio';
 
 interface SupabaseSqlModalProps {
@@ -183,7 +183,14 @@ $$;
 
 export const SupabaseSqlModal: React.FC<SupabaseSqlModalProps> = ({ isOpen, onClose }) => {
   const [copied, setCopied] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ status: 'idle' | 'success' | 'warning' | 'error'; message: string }>({
+    status: 'idle',
+    message: '',
+  });
+
   const isConfigured = isSupabaseConfigured();
+  const { url: currentUrl, anonKey: currentAnonKey } = getEffectiveSupabaseConfig();
 
   if (!isOpen) return null;
 
@@ -192,6 +199,52 @@ export const SupabaseSqlModal: React.FC<SupabaseSqlModalProps> = ({ isOpen, onCl
     navigator.clipboard.writeText(SUPABASE_SQL_CODE);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
+  };
+
+  const handleTestConnection = async () => {
+    playClickSound();
+    setTesting(true);
+    setTestResult({ status: 'idle', message: 'Đang kiểm tra kết nối tới Supabase...' });
+
+    try {
+      const client = getSupabase();
+      if (!client) {
+        setTestResult({
+          status: 'error',
+          message: 'Chưa cấu hình Supabase URL hoặc Anon Key.',
+        });
+        setTesting(false);
+        return;
+      }
+
+      // Query players table
+      const { error } = await client.from('players').select('id', { count: 'exact', head: true });
+
+      if (!error) {
+        setTestResult({
+          status: 'success',
+          message: 'Kết nối thành công! Bảng public.players và RLS đã sẵn sàng hoạt động.',
+        });
+      } else if (error.code === '42P01') {
+        // Table does not exist yet
+        setTestResult({
+          status: 'warning',
+          message: 'Đã kết nối máy chủ Supabase thành công, nhưng bảng "players" chưa được tạo! Hãy dán mã SQL bên dưới vào SQL Editor và nhấn Run.',
+        });
+      } else {
+        setTestResult({
+          status: 'warning',
+          message: `Máy chủ phản hồi: ${error.message} (${error.code || 'Notice'}). Hãy chắc chắn bạn đã Run mã SQL bên dưới.`,
+        });
+      }
+    } catch (err: any) {
+      setTestResult({
+        status: 'error',
+        message: 'Lỗi kết nối: ' + (err.message || String(err)),
+      });
+    } finally {
+      setTesting(false);
+    }
   };
 
   return (
@@ -230,8 +283,66 @@ export const SupabaseSqlModal: React.FC<SupabaseSqlModalProps> = ({ isOpen, onCl
           </button>
         </div>
 
+        {/* Project Info & Live Connection Test */}
+        <div className="p-4 bg-slate-950/80 border-b border-slate-800 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-slate-900 border border-slate-700/80">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-slate-400">Dự án Supabase đang kết nối:</span>
+                <code className="text-xs font-mono text-emerald-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800 select-all">
+                  {currentUrl}
+                </code>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Khóa anon key đã được tích hợp tự động vào ứng dụng.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={testing}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/50 text-cyan-300 font-bold text-xs transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${testing ? 'animate-spin' : ''}`} />
+                <span>{testing ? 'Đang thử...' : 'Kiểm tra kết nối'}</span>
+              </button>
+
+              <a
+                href="https://supabase.com/dashboard/project/qzoxbcsxnjzdsodfxhfl/sql/new"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md shadow-emerald-950/40 transition-all cursor-pointer"
+              >
+                <span>Mở SQL Editor</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
+          </div>
+
+          {testResult.message && (
+            <div
+              className={`p-2.5 rounded-xl text-xs flex items-start gap-2 border ${
+                testResult.status === 'success'
+                  ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
+                  : testResult.status === 'warning'
+                  ? 'bg-amber-950/60 border-amber-500/40 text-amber-200'
+                  : 'bg-rose-950/60 border-rose-500/40 text-rose-200'
+              }`}
+            >
+              {testResult.status === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              )}
+              <div className="flex-1 font-medium leading-relaxed">{testResult.message}</div>
+            </div>
+          )}
+        </div>
+
         {/* Instructions */}
-        <div className="p-4 bg-slate-950/60 border-b border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+        <div className="p-3 bg-slate-950/40 border-b border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
           <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
             <div className="flex items-center gap-1.5 font-bold text-slate-200">
               <Terminal className="w-3.5 h-3.5 text-emerald-400" />

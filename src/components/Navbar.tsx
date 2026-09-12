@@ -1,5 +1,5 @@
 import React from 'react';
-import { Leaf, Cpu, Volume2, VolumeX, Maximize2, Minimize2, BookOpen, LogOut, User, Award, Presentation } from 'lucide-react';
+import { Leaf, Cpu, Volume2, VolumeX, Maximize2, Minimize2, BookOpen, LogOut, User, Award, Presentation, FileSpreadsheet } from 'lucide-react';
 import { UserProfile } from '../types';
 import { playClickSound } from '../utils/audio';
 
@@ -11,6 +11,8 @@ interface NavbarProps {
   onToggleFullscreen: () => void;
   onOpenGuide: () => void;
   onSwitchUser: () => void;
+  onOpenGoogleSheets?: () => void;
+  isGoogleSheetsActive?: boolean;
   recentPointChange?: number | null;
 }
 
@@ -22,6 +24,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleFullscreen,
   onOpenGuide,
   onSwitchUser,
+  onOpenGoogleSheets,
+  isGoogleSheetsActive = false,
   recentPointChange,
 }) => {
   return (
@@ -101,6 +105,31 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <User className="w-3.5 h-3.5" />
               <span>Đăng nhập điểm danh</span>
+            </button>
+          )}
+
+          {/* Google Sheets Live Storage Button */}
+          {onOpenGoogleSheets && (
+            <button
+              id="btn-open-google-sheets"
+              onClick={() => {
+                playClickSound();
+                onOpenGoogleSheets();
+              }}
+              title="Cấu hình lưu điểm lên Google Sheets"
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-extrabold border-2 transition-all active:scale-95 cursor-pointer shadow-md ${
+                isGoogleSheetsActive
+                  ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/60 hover:bg-emerald-900/80 shadow-emerald-950/40'
+                  : 'bg-slate-900/90 text-amber-300 border-amber-500/50 hover:bg-amber-950/50 shadow-amber-950/30'
+              }`}
+            >
+              <FileSpreadsheet className={`w-4 h-4 ${isGoogleSheetsActive ? 'text-emerald-400' : 'text-amber-400'}`} />
+              <span className="hidden sm:inline">Google Sheets</span>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isGoogleSheetsActive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                }`}
+              />
             </button>
           )}
 

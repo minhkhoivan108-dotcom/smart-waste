@@ -9,11 +9,14 @@ import {
   UserPlus,
   Database,
   CheckCircle2,
-  Code
+  Code,
+  FileSpreadsheet,
+  Sparkles
 } from 'lucide-react';
 import { LeaderboardEntry, UserProfile } from '../types';
 import { playClickSound } from '../utils/audio';
 import { isSupabaseConfigured } from '../lib/supabase';
+import { isGoogleSheetsConfigured } from '../lib/googleSheets';
 
 interface LeaderboardProps {
   entries: LeaderboardEntry[];
@@ -21,6 +24,8 @@ interface LeaderboardProps {
   onRefreshOnline?: () => void;
   onAddNewUser: () => void;
   onOpenSqlGuide?: () => void;
+  onOpenGoogleSheets?: () => void;
+  isGoogleSheetsActive?: boolean;
   isLoading?: boolean;
 }
 
@@ -30,10 +35,12 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
   onRefreshOnline,
   onAddNewUser,
   onOpenSqlGuide,
+  onOpenGoogleSheets,
+  isGoogleSheetsActive = false,
   isLoading = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const isOnline = isSupabaseConfigured();
+  const isOnlineDb = isGoogleSheetsActive || isGoogleSheetsConfigured() || isSupabaseConfigured();
 
   const filteredEntries = entries.filter(
     (e) =>
@@ -94,25 +101,56 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
                   <span>BẢNG XẾP HẠNG STEM</span>
                   <Flame className="w-4 h-4 text-amber-400 animate-pulse" />
                 </h3>
-                <span
-                  className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.2 rounded-full border ${
-                    isOnline
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                      : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                  }`}
-                >
-                  <Database className="w-3 h-3" />
-                  {isOnline ? 'Supabase Online' : 'Chưa gắn URL'}
-                </span>
+                {onOpenGoogleSheets ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playClickSound();
+                      onOpenGoogleSheets();
+                    }}
+                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border cursor-pointer transition-all hover:scale-105 active:scale-95 ${
+                      isGoogleSheetsActive || isGoogleSheetsConfigured()
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 hover:bg-emerald-500/30'
+                        : 'bg-amber-500/20 text-amber-300 border-amber-500/50 hover:bg-amber-500/30'
+                    }`}
+                  >
+                    <FileSpreadsheet className="w-3 h-3 text-emerald-400" />
+                    <span>{isGoogleSheetsActive || isGoogleSheetsConfigured() ? 'Google Sheets Live' : 'Kết nối Google Sheets'}</span>
+                  </button>
+                ) : (
+                  <span
+                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.2 rounded-full border ${
+                      isOnlineDb
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    }`}
+                  >
+                    <FileSpreadsheet className="w-3 h-3" />
+                    {isOnlineDb ? 'Google Sheets Live' : 'Chưa gắn URL'}
+                  </span>
+                )}
               </div>
               <p className="text-[11px] text-slate-400 font-medium">
-                Xếp hạng trực tiếp theo tổng điểm và số lần phân loại đúng
+                Tự động đồng bộ nhiều thiết bị &bull; Điểm cao xếp trên
               </p>
             </div>
           </div>
 
           {/* Quick Actions */}
           <div className="flex items-center gap-1.5">
+            {onOpenGoogleSheets && (
+              <button
+                onClick={() => {
+                  playClickSound();
+                  onOpenGoogleSheets();
+                }}
+                title="Cấu hình Google Sheets và lấy mã Apps Script"
+                className="p-2 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/50 text-emerald-300 hover:text-white transition-all cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             {onOpenSqlGuide && (
               <button
                 onClick={() => {
@@ -131,11 +169,11 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
                 playClickSound();
                 onAddNewUser();
               }}
-              title="Đăng ký hoặc đăng nhập tài khoản"
+              title="Đăng ký hoặc đổi thí sinh"
               className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border-2 border-emerald-500/60 hover:border-emerald-400 text-emerald-300 hover:text-white font-black text-xs shadow-md shadow-emerald-950/50 hover:shadow-emerald-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
             >
               <UserPlus className="w-3.5 h-3.5 text-emerald-400" />
-              <span>{currentUser ? 'Hồ Sơ' : 'Đăng Ký/Đăng Nhập'}</span>
+              <span>{currentUser ? 'Hồ Sơ' : 'Đăng Ký Thí Sinh'}</span>
             </button>
 
             {onRefreshOnline && (
@@ -145,7 +183,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
                   onRefreshOnline();
                 }}
                 disabled={isLoading}
-                title="Tải lại dữ liệu từ Database Online"
+                title="Đồng bộ lại từ Google Sheets"
                 className="p-2 rounded-xl text-slate-400 hover:text-emerald-300 hover:bg-slate-850 border border-slate-700/80 hover:border-emerald-500/50 hover:scale-105 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
               >
                 <RotateCcw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
@@ -154,8 +192,21 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
           </div>
         </div>
 
+        {/* Point Rules Sub-bar */}
+        <div className="flex items-center justify-between px-3 py-1.5 bg-slate-950/80 rounded-xl border border-slate-800/80 text-[10px] text-slate-300 mb-2">
+          <span className="font-bold text-slate-400 flex items-center gap-1">
+            <Sparkles className="w-3 h-3 text-amber-400" />
+            <span>Quy tắc cộng điểm:</span>
+          </span>
+          <div className="flex items-center gap-2.5 font-bold">
+            <span className="text-emerald-400">Hữu cơ: +1đ</span>
+            <span className="text-amber-400">Tái chế: +2đ</span>
+            <span className="text-orange-400">Vô cơ: +3đ</span>
+          </div>
+        </div>
+
         {/* Search Input */}
-        <div className="relative mt-2">
+        <div className="relative">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"

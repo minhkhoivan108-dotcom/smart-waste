@@ -26,6 +26,7 @@ import { DuplicateWarningToast } from './components/DuplicateWarningToast';
 import { WasteGuideModal } from './components/WasteGuideModal';
 import { StemPresentationView } from './components/StemPresentationView';
 import { SupabaseSqlModal } from './components/SupabaseSqlModal';
+import { GoogleSheetsModal } from './components/GoogleSheetsModal';
 import {
   isSupabaseConfigured,
   getSupabase,
@@ -34,7 +35,13 @@ import {
   subscribeToLeaderboardChanges,
   recordClassificationOnline,
 } from './lib/supabase';
-import { Database, Code, ShieldCheck, Sparkles } from 'lucide-react';
+import {
+  isGoogleSheetsConfigured,
+  fetchGoogleSheetsData,
+  recordWasteToGoogleSheets,
+  registerPlayerToGoogleSheets,
+} from './lib/googleSheets';
+import { Database, Code, ShieldCheck, Sparkles, FileSpreadsheet, RefreshCw } from 'lucide-react';
 
 export default function App() {
   // User Profile
@@ -57,6 +64,8 @@ export default function App() {
   // Modals & UI States
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [isSqlModalOpen, setIsSqlModalOpen] = useState(false);
+  const [isGoogleSheetsModalOpen, setIsGoogleSheetsModalOpen] = useState(false);
+  const [isGoogleSheetsActive, setIsGoogleSheetsActive] = useState<boolean>(() => isGoogleSheetsConfigured());
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMuted, setIsMuted] = useState(getIsMuted);
 
@@ -64,8 +73,75 @@ export default function App() {
   const currentUserRef = useRef<UserProfile | null>(currentUser);
   currentUserRef.current = currentUser;
 
+  // Synchronization with Google Sheets (Primary Multi-device Online Database)
+  const syncWithGoogleSheets = useCallback(async (showLoading = false) => {
+    if (!isGoogleSheetsConfigured()) return;
+    if (showLoading) setIsLoadingLeaderboard(true);
+    try {
+      const res = await fetchGoogleSheetsData();
+      if (res.success && res.players) {
+        setIsGoogleSheetsActive(true);
+        // Sort descending by totalPoints, then correctCount
+        const sorted = [...res.players].sort((a, b) => {
+          if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+          return (b.correctCount || 0) - (a.correctCount || 0);
+        });
+
+        const mapped = sorted.map((p) => ({
+          ...p,
+          isCurrentUser: Boolean(
+            currentUserRef.current &&
+              (p.id === currentUserRef.current.id ||
+                p.name.trim().toLowerCase() === currentUserRef.current.name.trim().toLowerCase())
+          ),
+        }));
+
+        setLeaderboardEntries(mapped);
+
+        // Synchronize current user's points if changed on Google Sheets
+        if (currentUserRef.current) {
+          const matched = sorted.find(
+            (p) =>
+              p.id === currentUserRef.current?.id ||
+              p.name.trim().toLowerCase() === currentUserRef.current?.name.trim().toLowerCase()
+          );
+          if (matched) {
+            setCurrentUser((prev) => {
+              if (!prev) return prev;
+              if (prev.totalPoints !== matched.totalPoints || prev.correctCount !== matched.correctCount) {
+                const updated = {
+                  ...prev,
+                  totalPoints: matched.totalPoints,
+                  correctCount: matched.correctCount || prev.correctCount,
+                };
+                saveUserProfile(updated);
+                return updated;
+              }
+              return prev;
+            });
+          }
+        }
+
+        if (res.history && res.history.length > 0) {
+          setHistory(res.history);
+          saveHistory(res.history);
+        }
+      }
+    } catch (err) {
+      console.error('Google Sheets sync notice:', err);
+    } finally {
+      if (showLoading) setIsLoadingLeaderboard(false);
+    }
+  }, []);
+
   // Refresh online leaderboard from Supabase
   const refreshLeaderboardOnline = useCallback(async () => {
+    // If Google Sheets is configured, prioritize Google Sheets
+    if (isGoogleSheetsConfigured()) {
+      await syncWithGoogleSheets(true);
+      return;
+    }
+
     setIsLoadingLeaderboard(true);
     try {
       const res = await fetchOnlineLeaderboard(currentUserRef.current?.id);
@@ -77,7 +153,24 @@ export default function App() {
     } finally {
       setIsLoadingLeaderboard(false);
     }
-  }, []);
+  }, [syncWithGoogleSheets]);
+
+  // Periodic polling for real-time Google Sheets updates across multiple devices
+  useEffect(() => {
+    // Initial sync
+    if (isGoogleSheetsConfigured()) {
+      syncWithGoogleSheets(false);
+    }
+
+    // Auto-poll Google Sheets every 6 seconds so all devices see live changes
+    const pollInterval = setInterval(() => {
+      if (isGoogleSheetsConfigured()) {
+        syncWithGoogleSheets(false);
+      }
+    }, 6000);
+
+    return () => clearInterval(pollInterval);
+  }, [syncWithGoogleSheets]);
 
   // Initialize data and Supabase Auth session on mount
   useEffect(() => {
@@ -139,7 +232,16 @@ export default function App() {
     async (result: WasteClassificationResult) => {
       // 1. Strict verification: ONLY award points if source is webcam scanning
       const isWebcamScan = result.source === 'webcam' && !result.isReferenceOnly;
-      const pointsToAward = isWebcamScan ? result.points : 0;
+      
+      // Calculate points strictly according to STEM specification:
+      // Hữu cơ -> +1, Tái chế -> +2, Vô cơ -> +3
+      let pointsToAward = 0;
+      if (isWebcamScan) {
+        if (result.category === 'organic') pointsToAward = 1;
+        else if (result.category === 'recyclable') pointsToAward = 2;
+        else if (result.category === 'inorganic') pointsToAward = 3;
+        else pointsToAward = result.points || 1;
+      }
 
       // Set active notification toast
       const displayResult: WasteClassificationResult = {
@@ -150,6 +252,7 @@ export default function App() {
 
       if (pointsToAward > 0) {
         setRecentPointChange(pointsToAward);
+        playPointSound(pointsToAward);
         setTimeout(() => setRecentPointChange(null), 3000);
       }
 
@@ -157,7 +260,57 @@ export default function App() {
         return;
       }
 
-      // 2. If user is authenticated with Supabase: Save directly to online database via tamper-proof RPC
+      const activeUserName = currentUser ? currentUser.name : 'Thí sinh STEM';
+      const activeOrg = currentUser ? currentUser.organization || 'Khối Sáng Tạo STEM' : 'Khối Sáng Tạo STEM';
+      const activeAvatar = currentUser ? currentUser.avatar : '🌱';
+
+      // 2. PRIMARY STORAGE: Record directly to Google Sheets Online Web App
+      if (isGoogleSheetsConfigured()) {
+        try {
+          const sheetRes = await recordWasteToGoogleSheets({
+            playerName: activeUserName,
+            organization: activeOrg,
+            avatar: activeAvatar,
+            itemName: result.itemName,
+            category: result.category,
+            confidence: result.confidence,
+          });
+
+          if (sheetRes.success) {
+            setIsGoogleSheetsActive(true);
+
+            // Update current user points
+            if (currentUser) {
+              const newPoints = sheetRes.updatedPlayer
+                ? sheetRes.updatedPlayer.totalPoints
+                : currentUser.totalPoints + pointsToAward;
+              const newCount = sheetRes.updatedPlayer?.correctCount ?? currentUser.correctCount + 1;
+
+              const updatedUser: UserProfile = {
+                ...currentUser,
+                totalPoints: newPoints,
+                correctCount: newCount,
+                organicCount: currentUser.organicCount + (result.category === 'organic' ? 1 : 0),
+                recyclableCount: currentUser.recyclableCount + (result.category === 'recyclable' ? 1 : 0),
+                inorganicCount: currentUser.inorganicCount + (result.category === 'inorganic' ? 1 : 0),
+              };
+              setCurrentUser(updatedUser);
+              saveUserProfile(updatedUser);
+
+              if (newPoints >= 20 && currentUser.totalPoints < 20) {
+                playVictorySound();
+              }
+            }
+
+            // Immediately sync updated leaderboard and history from Google Sheets
+            syncWithGoogleSheets(false);
+          }
+        } catch (e) {
+          console.error('Google Sheets record failed, falling back:', e);
+        }
+      }
+
+      // 3. SECONDARY STORAGE: Record to Supabase if configured
       if (isSupabaseLive && currentUser) {
         try {
           const onlineRes = await recordClassificationOnline({
@@ -183,26 +336,15 @@ export default function App() {
 
             setCurrentUser(updatedUser);
             saveUserProfile(updatedUser);
-
-            // Trigger sound milestone
-            if (newTotalPoints >= 20 && currentUser.totalPoints < 20) {
-              playVictorySound();
-            } else if (newTotalPoints >= 35 && currentUser.totalPoints < 35) {
-              playVictorySound();
-            } else if (newTotalPoints >= 50 && currentUser.totalPoints < 50) {
-              playVictorySound();
-            }
-
-            // Immediately update online leaderboard
             refreshLeaderboardOnline();
-          } else {
-            console.warn('Online RPC points failed, falling back to local sync:', onlineRes.error);
           }
         } catch (err) {
           console.error('Error saving classification to Supabase:', err);
         }
-      } else {
-        // Fallback or unauthenticated update
+      }
+
+      // 4. Local state update if neither online database was ready
+      if (!isGoogleSheetsConfigured() && !isSupabaseLive) {
         let updatedUser: UserProfile;
         if (currentUser) {
           const wasPoints = currentUser.totalPoints;
@@ -240,22 +382,22 @@ export default function App() {
           setCurrentUser(updatedUser);
           saveUserProfile(updatedUser);
         }
+
+        // Add to local history log
+        const newRecord: WasteHistoryRecord = {
+          ...result,
+          points: pointsToAward,
+          id: 'record-' + Date.now(),
+          timestamp: Date.now(),
+          userName: currentUser ? currentUser.name : 'Thí sinh Khách',
+        };
+
+        setHistory((prev) => {
+          const next = [newRecord, ...prev];
+          saveHistory(next);
+          return next;
+        });
       }
-
-      // Add to local history log
-      const newRecord: WasteHistoryRecord = {
-        ...result,
-        points: pointsToAward,
-        id: 'record-' + Date.now(),
-        timestamp: Date.now(),
-        userName: currentUser ? currentUser.name : 'Thí sinh Khách',
-      };
-
-      setHistory((prev) => {
-        const next = [newRecord, ...prev];
-        saveHistory(next);
-        return next;
-      });
     },
     [currentUser, isSupabaseLive, refreshLeaderboardOnline]
   );
@@ -311,6 +453,8 @@ export default function App() {
         onToggleFullscreen={handleToggleFullscreen}
         onOpenGuide={() => setIsGuideOpen(true)}
         onSwitchUser={() => setIsLoginModalOpen(true)}
+        onOpenGoogleSheets={() => setIsGoogleSheetsModalOpen(true)}
+        isGoogleSheetsActive={isGoogleSheetsActive || isGoogleSheetsConfigured()}
         recentPointChange={recentPointChange}
       />
 
@@ -339,6 +483,17 @@ export default function App() {
         onLogin={handleLogin}
         onLogout={handleLogout}
         onOpenSqlGuide={() => setIsSqlModalOpen(true)}
+        onOpenGoogleSheets={() => setIsGoogleSheetsModalOpen(true)}
+      />
+
+      {/* Google Sheets Setup & Live Database Modal */}
+      <GoogleSheetsModal
+        isOpen={isGoogleSheetsModalOpen}
+        onClose={() => setIsGoogleSheetsModalOpen(false)}
+        onConnected={() => {
+          setIsGoogleSheetsActive(true);
+          syncWithGoogleSheets(true);
+        }}
       />
 
       {/* STEM Waste Guide Modal */}
@@ -368,51 +523,96 @@ export default function App() {
           onDuplicateDetected={handleDuplicateDetected}
           onOpenGuide={() => setIsGuideOpen(true)}
           onOpenSqlGuide={() => setIsSqlModalOpen(true)}
+          onOpenGoogleSheets={() => setIsGoogleSheetsModalOpen(true)}
+          isGoogleSheetsActive={isGoogleSheetsActive || isGoogleSheetsConfigured()}
         />
       )}
 
       {/* Main Content Dashboard */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
-        {/* Supabase Online Sync Banner */}
-        <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-lg text-xs flex-wrap">
-          <div className="flex items-center gap-2">
+        {/* Database Online Sync Status Banner */}
+        <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-slate-900/95 border border-slate-800 shadow-xl text-xs flex-wrap">
+          <div className="flex items-center gap-3">
             <span
-              className={`flex h-2.5 w-2.5 relative ${
-                isSupabaseLive ? 'text-emerald-400' : 'text-amber-400'
+              className={`flex h-3 w-3 relative ${
+                isGoogleSheetsActive || isGoogleSheetsConfigured()
+                  ? 'text-emerald-400'
+                  : isSupabaseLive
+                  ? 'text-cyan-400'
+                  : 'text-amber-400'
               }`}
             >
               <span
                 className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                  isSupabaseLive ? 'bg-emerald-400' : 'bg-amber-400'
+                  isGoogleSheetsActive || isGoogleSheetsConfigured()
+                    ? 'bg-emerald-400'
+                    : isSupabaseLive
+                    ? 'bg-cyan-400'
+                    : 'bg-amber-400'
                 }`}
               />
               <span
-                className={`relative inline-flex rounded-full h-2.5 w-2.5 ${
-                  isSupabaseLive ? 'bg-emerald-500' : 'bg-amber-500'
+                className={`relative inline-flex rounded-full h-3 w-3 ${
+                  isGoogleSheetsActive || isGoogleSheetsConfigured()
+                    ? 'bg-emerald-500'
+                    : isSupabaseLive
+                    ? 'bg-cyan-500'
+                    : 'bg-amber-500'
                 }`}
               />
             </span>
-            <span className="font-bold text-slate-200">
-              {isSupabaseLive
-                ? 'Supabase Database Online: Đang kết nối & Đồng bộ Realtime'
-                : 'Chế độ Supabase: Sẵn sàng cấu hình biến môi trường VITE_SUPABASE_URL'}
-            </span>
+            <div>
+              <div className="font-black text-slate-100 flex items-center gap-2">
+                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                <span>
+                  {isGoogleSheetsActive || isGoogleSheetsConfigured()
+                    ? 'Google Sheets Online Database: Đang lưu điểm & Lịch sử thật'
+                    : 'Google Sheets: Chưa kết nối URL Web App Apps Script'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                {isGoogleSheetsActive || isGoogleSheetsConfigured()
+                  ? 'Dữ liệu được cập nhật tự động giữa nhiều thiết bị, điện thoại và máy tính.'
+                  : 'Kết nối Google Sheets để nhiều người chơi cùng chung bảng xếp hạng online.'}
+              </p>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
+              onClick={() => setIsGoogleSheetsModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-950/90 hover:bg-emerald-900 border-2 border-emerald-500/60 text-emerald-300 hover:text-white font-black transition-all shadow-md shadow-emerald-950/40 hover:scale-105 active:scale-95 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Cấu Hình Google Sheets</span>
+            </button>
+
+            {isGoogleSheetsConfigured() && (
+              <button
+                onClick={() => syncWithGoogleSheets(true)}
+                title="Đồng bộ ngay từ Google Sheets"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white font-bold transition-all cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLeaderboard ? 'animate-spin text-emerald-400' : ''}`} />
+                <span className="hidden sm:inline">Đồng bộ</span>
+              </button>
+            )}
+
+            <button
               onClick={() => setIsSqlModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/40 text-cyan-300 hover:text-cyan-200 font-bold transition-all cursor-pointer"
+              title="Xem cấu hình SQL Supabase dự phòng"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 hover:text-slate-200 font-medium transition-all cursor-pointer"
             >
               <Code className="w-3.5 h-3.5" />
-              <span>Xem Lệnh SQL & Bảo Mật RLS</span>
+              <span className="hidden sm:inline">Mã SQL</span>
             </button>
+
             <button
               onClick={() => setIsLoginModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/40 text-emerald-300 hover:text-emerald-200 font-bold transition-all cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-200 hover:text-white font-bold transition-all cursor-pointer"
             >
-              <Database className="w-3.5 h-3.5" />
-              <span>{currentUser ? currentUser.name : 'Đăng Ký / Đăng Nhập'}</span>
+              <Database className="w-3.5 h-3.5 text-emerald-400" />
+              <span>{currentUser ? currentUser.name : 'Đăng Ký Thí Sinh'}</span>
             </button>
           </div>
         </div>
@@ -424,13 +624,13 @@ export default function App() {
             <div>
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-bold mb-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                DỰ ÁN CÔNG NGHỆ MÔI TRƯỜNG &bull; CUỘC THI STEM
+                DỰ ÁN CÔNG NGHỆ MÔI TRƯỜNG &bull; CUỘC THI STEM 2026
               </div>
               <h1 className="text-xl sm:text-2xl lg:text-3xl font-black text-slate-100 tracking-tight">
                 Hệ Thống Phân Loại Rác Thông Minh & Tích Điểm Thưởng
               </h1>
               <p className="text-xs sm:text-sm text-slate-300 max-w-2xl mt-1 leading-relaxed">
-                Ứng dụng AI nhận diện rác trực tiếp qua Webcam, lưu điểm trực tiếp vào cơ sở dữ liệu Supabase online. Sắp xếp bảng xếp hạng theo tổng điểm và số lần phân loại chính xác.
+                Ứng dụng AI nhận diện rác trực tiếp qua Webcam, lưu điểm trực tiếp vào <strong className="text-emerald-300">Google Sheets Online</strong>. Quy tắc điểm STEM: <span className="text-emerald-400 font-bold">Hữu cơ +1đ</span>, <span className="text-amber-400 font-bold">Tái chế +2đ</span>, <span className="text-orange-400 font-bold">Vô cơ +3đ</span>. Bảng xếp hạng tự động cập nhật từ cao xuống thấp.
               </p>
             </div>
 
@@ -473,6 +673,8 @@ export default function App() {
               onRefreshOnline={refreshLeaderboardOnline}
               onAddNewUser={() => setIsLoginModalOpen(true)}
               onOpenSqlGuide={() => setIsSqlModalOpen(true)}
+              onOpenGoogleSheets={() => setIsGoogleSheetsModalOpen(true)}
+              isGoogleSheetsActive={isGoogleSheetsActive || isGoogleSheetsConfigured()}
               isLoading={isLoadingLeaderboard}
             />
           </div>

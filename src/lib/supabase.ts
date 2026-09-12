@@ -2,17 +2,34 @@ import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabas
 import { LeaderboardEntry, UserProfile, WasteCategory } from '../types';
 import { getLevelTitle } from '../utils/storage';
 
-// Read public environment variables for Supabase safely
+// Read public environment variables for Supabase safely with provided project credentials
 const metaEnv = (import.meta as unknown as { env?: Record<string, string> }).env || {};
-const supabaseUrl = metaEnv.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || '';
+
+export const DEFAULT_SUPABASE_URL = 'https://qzoxbcsxnjzdsodfxhfl.supabase.co';
+export const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF6b3hiY3N4bmp6ZHNvZGZ4aGZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxNzI3NDQsImV4cCI6MjEwNDc0ODc0NH0.SgYQni5-lFySUzjg1Y1RMBnnfJG-5QFIQBIQkg7nFnc';
+
+export function getEffectiveSupabaseConfig() {
+  const url =
+    metaEnv.VITE_SUPABASE_URL ||
+    (typeof window !== 'undefined' ? localStorage.getItem('STEM_SUPABASE_URL') : null) ||
+    DEFAULT_SUPABASE_URL;
+
+  const anonKey =
+    metaEnv.VITE_SUPABASE_ANON_KEY ||
+    (typeof window !== 'undefined' ? localStorage.getItem('STEM_SUPABASE_ANON_KEY') : null) ||
+    DEFAULT_SUPABASE_ANON_KEY;
+
+  return { url, anonKey };
+}
 
 export const isSupabaseConfigured = (): boolean => {
+  const { url, anonKey } = getEffectiveSupabaseConfig();
   return Boolean(
-    supabaseUrl &&
-    supabaseAnonKey &&
-    supabaseUrl.startsWith('http') &&
-    !supabaseUrl.includes('placeholder')
+    url &&
+    anonKey &&
+    url.startsWith('http') &&
+    !url.includes('placeholder')
   );
 };
 
@@ -23,8 +40,9 @@ export const getSupabase = (): SupabaseClient | null => {
   if (!isSupabaseConfigured()) {
     return null;
   }
+  const { url, anonKey } = getEffectiveSupabaseConfig();
   if (!supabaseInstance) {
-    supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
+    supabaseInstance = createClient(url, anonKey, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
