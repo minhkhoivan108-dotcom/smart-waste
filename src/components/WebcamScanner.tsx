@@ -5,8 +5,6 @@ import {
   Zap,
   Sparkles,
   Upload,
-  Play,
-  Pause,
   AlertCircle,
   ScanLine,
   Sliders,
@@ -30,7 +28,6 @@ import {
 import {
   WasteClassificationResult,
   WasteCategory,
-  DemoWasteItem,
   DuplicateAlertInfo,
   ScannedFingerprintRecord,
 } from '../types';
@@ -76,8 +73,6 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
 
   // Scan HUD visual states
   const [lastScannedImage, setLastScannedImage] = useState<string | null>(null);
-  const [activeCategoryFilter, setActiveCategoryFilter] = useState<'all' | WasteCategory>('all');
-  const [autoDemoLoop, setAutoDemoLoop] = useState(false);
   const [scanStatusText, setScanStatusText] = useState('CHỜ KÍCH HOẠT CAMERA');
 
   // Anti-Cheat & Duplicate Prevention State (Default false to allow repeated scanning for points)
@@ -208,7 +203,11 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
   };
 
   // Perform AI Classification on an image base64
-  const handleProcessImage = async (base64Image: string, hint?: string) => {
+  const handleProcessImage = async (
+    base64Image: string,
+    hint?: string,
+    scanSource: 'webcam' | 'file_upload' = 'webcam'
+  ) => {
     if (isProcessing) return;
 
     // 1. Anti-cheat duplicate evaluation against the ENTIRE registry of scanned fingerprints
@@ -304,6 +303,8 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
           ...result.data,
           rawImage: base64Image,
           fingerprintHash: currentFingerprint?.dHash,
+          source: scanSource,
+          isReferenceOnly: false,
         };
 
         // Save new fingerprint to lifetime registry
@@ -349,6 +350,8 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
         ecoImpact: fallbackItem.ecoImpact,
         rawImage: base64Image,
         fingerprintHash: currentFingerprint?.dHash,
+        source: scanSource,
+        isReferenceOnly: false,
       };
 
       if (currentFingerprint) {
@@ -388,96 +391,9 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
     }
     const frame = captureFrame();
     if (frame) {
-      handleProcessImage(frame);
+      handleProcessImage(frame, undefined, 'webcam');
     }
   };
-
-  // Trigger a specific preset demo item (Simulated scan)
-  const handleTriggerDemoItem = (item: DemoWasteItem) => {
-    if (isProcessing) return;
-
-    // Check duplicate on demo mode if anti-cheat is enabled
-    if (antiCheatEnabled) {
-      // Check if this demo item has already been scanned in the registry
-      const matchedRecord = fingerprintRegistry.find(
-        (r) => r.itemName.toLowerCase() === item.itemName.toLowerCase()
-      );
-      const isConsecutiveDuplicate = lastDemoItemId === item.id;
-
-      if (matchedRecord || isConsecutiveDuplicate) {
-        playWarningSound();
-        setDuplicateBlockedCount((prev) => prev + 1);
-        setLastSimilarity(100);
-        const timeDiff = matchedRecord ? Date.now() - matchedRecord.timestamp : 5000;
-        const alertInfo: DuplicateAlertInfo = {
-          itemName: item.itemName,
-          similarity: 1.0,
-          timeSinceLastScanMs: timeDiff,
-          reason: `Món rác "${item.itemName}" này đã được quét và tích điểm trước đó trong sổ kiểm toán!`,
-          suggestedAction:
-            'Không thể quét lặp cùng 1 món rác để cày điểm. Hãy chọn món rác khác hoặc bấm "Mở Sổ Vân Tay" để xóa bộ nhớ!',
-          isExactFileMatch: true,
-          matchedRecord: matchedRecord
-            ? {
-                id: matchedRecord.id,
-                itemName: matchedRecord.itemName,
-                timestamp: matchedRecord.timestamp,
-                thumbnail: matchedRecord.thumbnail,
-              }
-            : undefined,
-        };
-        if (onDuplicateDetected) {
-          onDuplicateDetected(alertInfo);
-        }
-        setScanStatusText(`⚠️ GIAN LẬN: ${item.itemName.toUpperCase()} ĐÃ ĐƯỢC QUÉT TRƯỚC (+0Đ)`);
-        return;
-      }
-
-      setLastDemoItemId(item.id);
-      setLastDemoScanTime(Date.now());
-      setPreviousItemName(item.itemName);
-      setWaitingForBinDeposit(true);
-    }
-
-    setIsProcessing(true);
-    playScanSound();
-    setScanStatusText(`ĐANG MÔ PHỎNG: ${item.itemName}...`);
-
-    setTimeout(() => {
-      const result: WasteClassificationResult = {
-        category: item.category,
-        itemName: item.itemName,
-        points: item.points,
-        confidence: item.confidence,
-        description: item.description,
-        binColor: item.binColor,
-        recyclingTip: item.recyclingTip,
-        ecoImpact: item.ecoImpact,
-      };
-
-      // Register this demo item to registry so user cannot immediately re-scan it
-      if (antiCheatEnabled) {
-        const demoRecord: ScannedFingerprintRecord = {
-          id: 'fp-demo-' + item.id + '-' + Date.now(),
-          dHash: computeFastChecksum(item.itemName).repeat(8).substring(0, 64),
-          aHash: computeFastChecksum(item.category).repeat(8).substring(0, 64),
-          checksum: computeFastChecksum(item.itemName + '-' + item.id),
-          timestamp: Date.now(),
-          itemName: item.itemName,
-          category: item.category,
-          points: item.points,
-        };
-        registerScannedFingerprint(demoRecord);
-        setFingerprintRegistry(loadFingerprintRegistry());
-      }
-
-      playPointSound(item.points);
-      onClassified(result);
-      setScanStatusText(`HOÀN TẤT: +${item.points} ĐIỂM (${item.category.toUpperCase()})`);
-      setIsProcessing(false);
-    }, 600);
-  };
-
 
   // Handle uploaded image file
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -488,7 +404,7 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
     reader.onload = (event) => {
       const base64 = event.target?.result as string;
       if (base64) {
-        handleProcessImage(base64);
+        handleProcessImage(base64, undefined, 'file_upload');
       }
     };
     reader.readAsDataURL(file);
@@ -506,23 +422,6 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   });
-
-  // Auto Demo Loop for unattended STEM booth displays
-  useEffect(() => {
-    if (!autoDemoLoop) return;
-    const interval = setInterval(() => {
-      if (!isProcessing) {
-        const randomItem = DEMO_WASTE_ITEMS[Math.floor(Math.random() * DEMO_WASTE_ITEMS.length)];
-        handleTriggerDemoItem(randomItem);
-      }
-    }, 4500);
-    return () => clearInterval(interval);
-  }, [autoDemoLoop, isProcessing]);
-
-  // Filtered demo items list
-  const filteredDemoItems = DEMO_WASTE_ITEMS.filter((item) =>
-    activeCategoryFilter === 'all' ? true : item.category === activeCategoryFilter
-  );
 
   return (
     <div className="w-full space-y-4">
@@ -923,24 +822,6 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
               <span>Đã chặn: {duplicateBlockedCount} lần</span>
             </div>
           )}
-
-          {/* Auto Presentation Loop Toggle for STEM booths */}
-          <button
-            id="btn-toggle-auto-demo"
-            onClick={() => {
-              playClickSound();
-              setAutoDemoLoop(!autoDemoLoop);
-            }}
-            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-black border-2 transition-all cursor-pointer ${
-              autoDemoLoop
-                ? 'bg-gradient-to-r from-cyan-950 to-blue-900 border-cyan-400 text-cyan-200 shadow-lg shadow-cyan-500/30 ring-2 ring-cyan-400/40 hover:scale-105 active:scale-95'
-                : 'bg-slate-800/90 border-slate-600 text-slate-300 hover:border-slate-400 hover:text-white hover:scale-105 active:scale-95'
-            }`}
-            title="Tự động mô phỏng quét ngẫu nhiên cho gian hàng STEM"
-          >
-            {autoDemoLoop ? <Pause className="w-3.5 h-3.5 text-cyan-400 animate-pulse" /> : <Play className="w-3.5 h-3.5 text-slate-400" />}
-            <span>Tự động Demo {autoDemoLoop ? '(Bật)' : ''}</span>
-          </button>
         </div>
       </div>
 
@@ -995,122 +876,6 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
             <span className="w-1.5 h-1.5 rounded-full bg-orange-400" />
             <span>Thùng Cam (Thu gom đặc biệt)</span>
           </div>
-        </div>
-      </div>
-
-      {/* Interactive Demo Simulation Objects Tray */}
-      <div className="p-4 bg-slate-900/80 border-2 border-slate-800 rounded-2xl shadow-xl">
-        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-cyan-400 animate-pulse" />
-            <h4 className="text-xs font-black uppercase tracking-wider text-slate-100">
-              Thư Viện Mẫu Vật STEM (Chế Độ Mô Phỏng Nhanh 1-Chạm):
-            </h4>
-          </div>
-
-          {/* High-visibility Filter tabs */}
-          <div className="flex items-center gap-1.5 text-xs">
-            <button
-              onClick={() => {
-                playClickSound();
-                setActiveCategoryFilter('all');
-              }}
-              className={`px-3 py-1.5 rounded-xl font-black transition-all cursor-pointer ${
-                activeCategoryFilter === 'all'
-                  ? 'bg-slate-200 text-slate-950 border-2 border-white shadow-lg shadow-slate-900/80 scale-105 ring-2 ring-slate-400/50'
-                  : 'bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-750 border border-slate-700 hover:scale-102 active:scale-95'
-              }`}
-            >
-              Tất cả
-            </button>
-            <button
-              onClick={() => {
-                playClickSound();
-                setActiveCategoryFilter('organic');
-              }}
-              className={`px-3 py-1.5 rounded-xl font-black transition-all cursor-pointer ${
-                activeCategoryFilter === 'organic'
-                  ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 border-2 border-emerald-200 shadow-lg shadow-emerald-500/40 scale-105 ring-2 ring-emerald-400/50'
-                  : 'bg-emerald-950/40 text-emerald-400 hover:bg-emerald-900/50 border border-emerald-500/30 hover:scale-102 active:scale-95'
-              }`}
-            >
-              Hữu cơ (+1)
-            </button>
-            <button
-              onClick={() => {
-                playClickSound();
-                setActiveCategoryFilter('recyclable');
-              }}
-              className={`px-3 py-1.5 rounded-xl font-black transition-all cursor-pointer ${
-                activeCategoryFilter === 'recyclable'
-                  ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-slate-950 border-2 border-amber-100 shadow-lg shadow-amber-500/40 scale-105 ring-2 ring-amber-400/50'
-                  : 'bg-amber-950/40 text-amber-400 hover:bg-amber-900/50 border border-amber-500/30 hover:scale-102 active:scale-95'
-              }`}
-            >
-              Tái chế (+2)
-            </button>
-            <button
-              onClick={() => {
-                playClickSound();
-                setActiveCategoryFilter('inorganic');
-              }}
-              className={`px-3 py-1.5 rounded-xl font-black transition-all cursor-pointer ${
-                activeCategoryFilter === 'inorganic'
-                  ? 'bg-gradient-to-r from-orange-500 to-rose-500 text-white border-2 border-orange-200 shadow-lg shadow-orange-500/40 scale-105 ring-2 ring-orange-400/50'
-                  : 'bg-orange-950/40 text-orange-400 hover:bg-orange-900/50 border border-orange-500/30 hover:scale-102 active:scale-95'
-              }`}
-            >
-              Vô cơ (+3)
-            </button>
-          </div>
-        </div>
-
-        {/* Clickable Quick-Test Chips with prominent hover, border glow & tactile scale */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
-          {filteredDemoItems.map((item) => {
-            const badgeColor =
-              item.category === 'organic'
-                ? 'border-2 border-emerald-500/40 hover:border-emerald-400 bg-emerald-950/20 hover:bg-emerald-950/50 text-emerald-200 hover:shadow-emerald-500/20'
-                : item.category === 'recyclable'
-                ? 'border-2 border-amber-500/40 hover:border-amber-400 bg-amber-950/20 hover:bg-amber-950/50 text-amber-200 hover:shadow-amber-500/20'
-                : 'border-2 border-orange-500/40 hover:border-orange-400 bg-orange-950/20 hover:bg-orange-950/50 text-orange-200 hover:shadow-orange-500/20';
-
-            const pointTag =
-              item.category === 'organic'
-                ? 'bg-emerald-400 text-slate-950 font-black'
-                : item.category === 'recyclable'
-                ? 'bg-amber-400 text-slate-950 font-black'
-                : 'bg-orange-500 text-white font-black';
-
-            return (
-              <button
-                key={item.id}
-                onClick={() => {
-                  playClickSound();
-                  handleTriggerDemoItem(item);
-                }}
-                disabled={isProcessing}
-                className={`p-3 rounded-2xl border text-left transition-all hover:-translate-y-1 hover:shadow-xl active:scale-95 flex items-center gap-2.5 cursor-pointer select-none group ${badgeColor}`}
-              >
-                <span className="text-3xl select-none flex-shrink-0 group-hover:scale-110 transition-transform">
-                  {item.emoji}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs font-extrabold text-slate-100 truncate group-hover:text-white">
-                    {item.itemName}
-                  </div>
-                  <div className="flex items-center gap-1.5 mt-1">
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full shadow-sm ${pointTag}`}>
-                      +{item.points} đ
-                    </span>
-                    <span className="text-[10px] text-slate-400 font-semibold truncate">
-                      {item.category === 'organic' ? 'Hữu cơ' : item.category === 'recyclable' ? 'Tái chế' : 'Vô cơ'}
-                    </span>
-                  </div>
-                </div>
-              </button>
-            );
-          })}
         </div>
       </div>
 

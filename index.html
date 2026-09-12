@@ -7,21 +7,28 @@
       // Compatibility patch for environments where window.fetch has only a getter
       (function() {
         try {
-          var origFetch = window.fetch;
-          var currentFetch = origFetch;
-          Object.defineProperty(window, 'fetch', {
-            get: function() {
-              return currentFetch || origFetch;
-            },
-            set: function(fn) {
-              currentFetch = fn;
-            },
-            configurable: true,
-            enumerable: true
-          });
-        } catch (e) {
-          console.warn('Fetch setter patch error:', e);
-        }
+          var origFetch = window.fetch ? window.fetch.bind(window) : null;
+          var customFetch = origFetch;
+          var proto = (typeof Window !== 'undefined' && Window.prototype) || window;
+
+          try {
+            Object.defineProperty(proto, 'fetch', {
+              get: function() { return customFetch; },
+              set: function(fn) { customFetch = fn; },
+              configurable: true,
+              enumerable: true
+            });
+          } catch (_) {}
+
+          try {
+            Object.defineProperty(window, 'fetch', {
+              get: function() { return customFetch; },
+              set: function(fn) { customFetch = fn; },
+              configurable: true,
+              enumerable: true
+            });
+          } catch (_) {}
+        } catch (e) {}
       })();
     </script>
     <title>EcoSort AI - Phân Loại Rác Tích Điểm</title>

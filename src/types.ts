@@ -10,6 +10,8 @@ export interface WasteClassificationResult {
   recyclingTip: string;
   ecoImpact?: string;
   rawImage?: string;
+  source?: 'webcam' | 'file_upload' | 'reference_view';
+  isReferenceOnly?: boolean;
   isDuplicate?: boolean;
   duplicateSimilarity?: number;
   isScreenOrPhotoSpoof?: boolean;

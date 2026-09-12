@@ -76,32 +76,45 @@ export default function App() {
   // Handle classification result from WebcamScanner
   const handleClassified = useCallback(
     (result: WasteClassificationResult) => {
-      // 1. Set active notification toast
-      setActiveNotification(result);
-      setRecentPointChange(result.points);
-      setTimeout(() => setRecentPointChange(null), 3000);
+      // 1. Strict verification: ONLY award points if source is webcam scanning
+      const isWebcamScan = result.source === 'webcam' && !result.isReferenceOnly;
+      const pointsToAward = isWebcamScan ? result.points : 0;
 
-      // 2. Update current user
+      // Set active notification toast (with 0 points if reference view)
+      const displayResult: WasteClassificationResult = {
+        ...result,
+        points: pointsToAward,
+      };
+      setActiveNotification(displayResult);
+
+      if (pointsToAward > 0) {
+        setRecentPointChange(pointsToAward);
+        setTimeout(() => setRecentPointChange(null), 3000);
+      }
+
+      // 2. Only update user score & counts if scanned via webcam
       let updatedUser: UserProfile;
       if (currentUser) {
         const wasPoints = currentUser.totalPoints;
-        const newPoints = wasPoints + result.points;
+        const newPoints = wasPoints + pointsToAward;
 
         updatedUser = {
           ...currentUser,
           totalPoints: newPoints,
-          organicCount: currentUser.organicCount + (result.category === 'organic' ? 1 : 0),
-          recyclableCount: currentUser.recyclableCount + (result.category === 'recyclable' ? 1 : 0),
-          inorganicCount: currentUser.inorganicCount + (result.category === 'inorganic' ? 1 : 0),
+          organicCount: currentUser.organicCount + (isWebcamScan && result.category === 'organic' ? 1 : 0),
+          recyclableCount: currentUser.recyclableCount + (isWebcamScan && result.category === 'recyclable' ? 1 : 0),
+          inorganicCount: currentUser.inorganicCount + (isWebcamScan && result.category === 'inorganic' ? 1 : 0),
         };
 
         // Check if user reached new high milestone
-        if (newPoints >= 20 && wasPoints < 20) {
-          playVictorySound();
-        } else if (newPoints >= 35 && wasPoints < 35) {
-          playVictorySound();
-        } else if (newPoints >= 50 && wasPoints < 50) {
-          playVictorySound();
+        if (isWebcamScan) {
+          if (newPoints >= 20 && wasPoints < 20) {
+            playVictorySound();
+          } else if (newPoints >= 35 && wasPoints < 35) {
+            playVictorySound();
+          } else if (newPoints >= 50 && wasPoints < 50) {
+            playVictorySound();
+          }
         }
       } else {
         // Fallback user if not yet registered
@@ -110,35 +123,38 @@ export default function App() {
           name: 'Thí sinh Khách',
           organization: 'Khối Sáng Tạo STEM',
           avatar: '🌱',
-          totalPoints: result.points,
-          organicCount: result.category === 'organic' ? 1 : 0,
-          recyclableCount: result.category === 'recyclable' ? 1 : 0,
-          inorganicCount: result.category === 'inorganic' ? 1 : 0,
+          totalPoints: pointsToAward,
+          organicCount: isWebcamScan && result.category === 'organic' ? 1 : 0,
+          recyclableCount: isWebcamScan && result.category === 'recyclable' ? 1 : 0,
+          inorganicCount: isWebcamScan && result.category === 'inorganic' ? 1 : 0,
           createdAt: Date.now(),
         };
       }
 
-      setCurrentUser(updatedUser);
-      saveUserProfile(updatedUser);
+      if (isWebcamScan) {
+        setCurrentUser(updatedUser);
+        saveUserProfile(updatedUser);
 
-      // 3. Update leaderboard
-      const updatedLeaderboard = loadLeaderboard(updatedUser);
-      setLeaderboardEntries(updatedLeaderboard);
-      saveLeaderboard(updatedLeaderboard);
+        // 3. Update leaderboard ONLY when webcam scan awards points
+        const updatedLeaderboard = loadLeaderboard(updatedUser);
+        setLeaderboardEntries(updatedLeaderboard);
+        saveLeaderboard(updatedLeaderboard);
 
-      // 4. Add to history
-      const newRecord: WasteHistoryRecord = {
-        ...result,
-        id: 'record-' + Date.now(),
-        timestamp: Date.now(),
-        userName: updatedUser.name,
-      };
+        // 4. Add to history
+        const newRecord: WasteHistoryRecord = {
+          ...result,
+          points: pointsToAward,
+          id: 'record-' + Date.now(),
+          timestamp: Date.now(),
+          userName: updatedUser.name,
+        };
 
-      setHistory((prev) => {
-        const next = [newRecord, ...prev];
-        saveHistory(next);
-        return next;
-      });
+        setHistory((prev) => {
+          const next = [newRecord, ...prev];
+          saveHistory(next);
+          return next;
+        });
+      }
     },
     [currentUser]
   );
