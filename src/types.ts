@@ -61,9 +61,11 @@ export interface WasteHistoryRecord extends WasteClassificationResult {
 export interface UserProfile {
   id: string;
   name: string;
+  email?: string;
   organization: string; // Lớp, Chi đội STEM, hoặc Trường
   avatar: string;
   totalPoints: number;
+  correctCount: number; // Số lần phân loại đúng
   organicCount: number;
   recyclableCount: number;
   inorganicCount: number;
@@ -73,8 +75,13 @@ export interface UserProfile {
 export interface LeaderboardEntry {
   id: string;
   name: string;
+  email?: string;
   organization: string;
   totalPoints: number;
+  correctCount: number; // Số lần phân loại đúng
+  organicCount?: number;
+  recyclableCount?: number;
+  inorganicCount?: number;
   avatar: string;
   levelTitle: string;
   lastActive: number;

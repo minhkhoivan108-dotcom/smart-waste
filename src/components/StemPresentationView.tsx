@@ -16,6 +16,7 @@ interface StemPresentationViewProps {
   onExitFullscreen: () => void;
   onDuplicateDetected?: (alert: any) => void;
   onOpenGuide?: () => void;
+  onOpenSqlGuide?: () => void;
 }
 
 export const StemPresentationView: React.FC<StemPresentationViewProps> = ({
@@ -30,6 +31,7 @@ export const StemPresentationView: React.FC<StemPresentationViewProps> = ({
   onExitFullscreen,
   onDuplicateDetected,
   onOpenGuide,
+  onOpenSqlGuide,
 }) => {
   const totalScans = history.length;
   const organicCount = history.filter((x) => x.category === 'organic').length;
@@ -106,8 +108,9 @@ export const StemPresentationView: React.FC<StemPresentationViewProps> = ({
           <Leaderboard
             entries={leaderboardEntries}
             currentUser={currentUser}
-            onResetLeaderboard={onResetLeaderboard}
+            onRefreshOnline={onResetLeaderboard}
             onAddNewUser={onAddNewUser}
+            onOpenSqlGuide={onOpenSqlGuide}
           />
         </div>
       </div>

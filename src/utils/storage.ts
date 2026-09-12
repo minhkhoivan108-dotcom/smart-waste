@@ -10,53 +10,8 @@ export const DEFAULT_AVATARS = [
   '🌱', '🤖', '🦊', '🦉', '🐻‍❄️', '🚀', '♻️', '🌍', '🐢', '⚡'
 ];
 
-export const INITIAL_LEADERBOARD: LeaderboardEntry[] = [
-  {
-    id: 'lead-1',
-    name: 'Trần Minh Khoa',
-    organization: 'Lớp 11A1 - CLB STEM',
-    totalPoints: 48,
-    avatar: '🤖',
-    levelTitle: 'Đại Sứ Hành Tinh Xanh',
-    lastActive: Date.now() - 1000 * 60 * 15,
-  },
-  {
-    id: 'lead-2',
-    name: 'Lê Bảo Ngọc',
-    organization: 'Đội Eco-Warriors',
-    totalPoints: 39,
-    avatar: '🌱',
-    levelTitle: 'Hiệp Sĩ Môi Trường',
-    lastActive: Date.now() - 1000 * 60 * 45,
-  },
-  {
-    id: 'lead-3',
-    name: 'Đội Robot 10A2',
-    organization: 'Khối 10 Sáng Tạo',
-    totalPoints: 31,
-    avatar: '🚀',
-    levelTitle: 'Chuyên Gia Tái Chế',
-    lastActive: Date.now() - 1000 * 60 * 120,
-  },
-  {
-    id: 'lead-4',
-    name: 'Hoàng Yến Nhi',
-    organization: 'Chi Đội Xanh 9B',
-    totalPoints: 24,
-    avatar: '🦊',
-    levelTitle: 'Chiến Binh Phân Loại',
-    lastActive: Date.now() - 1000 * 60 * 240,
-  },
-  {
-    id: 'lead-5',
-    name: 'Nguyễn Quốc Tuấn',
-    organization: 'CLB Hóa - Sinh STEM',
-    totalPoints: 17,
-    avatar: '🦉',
-    levelTitle: 'Chiến Binh Phân Loại',
-    lastActive: Date.now() - 1000 * 60 * 360,
-  },
-];
+// No fake or mock data: Leaderboard starts empty and is populated purely from online Supabase database
+export const INITIAL_LEADERBOARD: LeaderboardEntry[] = [];
 
 export function getLevelTitle(points: number): string {
   if (points >= 50) return 'Đại Sứ Hành Tinh Xanh';
@@ -109,8 +64,10 @@ export function loadLeaderboard(currentUser?: UserProfile | null): LeaderboardEn
     const currentEntry: LeaderboardEntry = {
       id: currentUser.id,
       name: currentUser.name,
+      email: currentUser.email,
       organization: currentUser.organization || 'Thí sinh STEM',
       totalPoints: currentUser.totalPoints,
+      correctCount: currentUser.correctCount || 0,
       avatar: currentUser.avatar || '🌱',
       levelTitle: getLevelTitle(currentUser.totalPoints),
       lastActive: Date.now(),
@@ -147,8 +104,10 @@ export function resetLeaderboardToDefaults(currentUser?: UserProfile | null): Le
     list.push({
       id: currentUser.id,
       name: currentUser.name,
+      email: currentUser.email,
       organization: currentUser.organization || 'Thí sinh STEM',
       totalPoints: currentUser.totalPoints,
+      correctCount: currentUser.correctCount || 0,
       avatar: currentUser.avatar || '🌱',
       levelTitle: getLevelTitle(currentUser.totalPoints),
       lastActive: Date.now(),
