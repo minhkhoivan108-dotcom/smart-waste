@@ -317,6 +317,10 @@ export async function recordClassificationOnline(params: {
   points: number;
   source: string;
   confidence?: number;
+  userId?: string;
+  userName?: string;
+  organization?: string;
+  avatar?: string;
 }): Promise<{
   success: boolean;
   totalPoints?: number;
@@ -338,7 +342,38 @@ export async function recordClassificationOnline(params: {
     });
 
     if (error) {
-      // Fallback: If RPC not yet created in Supabase, we report clear instructions
+      // Fallback: If RPC not yet created in Supabase or user logged in via quick-play,
+      // update directly to table 'players' so score is never lost
+      if (params.userId) {
+        try {
+          const { data: pData } = await client
+            .from('players')
+            .select('total_points, correct_count')
+            .eq('id', params.userId)
+            .maybeSingle();
+
+          const newPts = (pData?.total_points || 0) + params.points;
+          const newCnt = (pData?.correct_count || 0) + 1;
+
+          await client.from('players').upsert({
+            id: params.userId,
+            username: params.userName || 'Thí sinh STEM',
+            organization: params.organization || 'Khối Sáng Tạo STEM',
+            avatar: params.avatar || '🌱',
+            total_points: newPts,
+            correct_count: newCnt,
+            updated_at: new Date().toISOString(),
+          });
+
+          return {
+            success: true,
+            totalPoints: newPts,
+            correctCount: newCnt,
+          };
+        } catch (tableErr) {
+          console.warn('Direct table update notice:', tableErr);
+        }
+      }
       return { success: false, error: error.message };
     }
 

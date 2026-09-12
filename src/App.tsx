@@ -13,6 +13,9 @@ import {
   loadHistory,
   saveHistory,
   clearHistory,
+  loadLeaderboard,
+  saveLeaderboard,
+  getLevelTitle,
 } from './utils/storage';
 import { getIsMuted, toggleMute, playVictorySound, playPointSound } from './utils/audio';
 
@@ -51,7 +54,9 @@ export default function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Leaderboard & History
-  const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>([]);
+  const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>(() => {
+    return loadLeaderboard(loadUserProfile());
+  });
   const [history, setHistory] = useState<WasteHistoryRecord[]>([]);
   const [isLoadingLeaderboard, setIsLoadingLeaderboard] = useState(false);
 
@@ -144,12 +149,53 @@ export default function App() {
 
     setIsLoadingLeaderboard(true);
     try {
-      const res = await fetchOnlineLeaderboard(currentUserRef.current?.id);
-      if (res.entries) {
-        setLeaderboardEntries(res.entries);
+      if (isSupabaseConfigured()) {
+        const res = await fetchOnlineLeaderboard(currentUserRef.current?.id);
+        if (res.entries && res.entries.length > 0) {
+          let list = [...res.entries];
+          if (currentUserRef.current) {
+            const cur = currentUserRef.current;
+            const idx = list.findIndex(
+              (e) => e.id === cur.id || e.name.trim().toLowerCase() === cur.name.trim().toLowerCase()
+            );
+            if (idx >= 0) {
+              list[idx].isCurrentUser = true;
+              if (cur.totalPoints > list[idx].totalPoints) {
+                list[idx].totalPoints = cur.totalPoints;
+                list[idx].correctCount = cur.correctCount;
+              }
+            } else {
+              list.push({
+                id: cur.id,
+                name: cur.name,
+                email: cur.email,
+                organization: cur.organization || 'Khối Sáng Tạo STEM',
+                totalPoints: cur.totalPoints,
+                correctCount: cur.correctCount || 0,
+                avatar: cur.avatar || '🌱',
+                levelTitle: getLevelTitle(cur.totalPoints),
+                lastActive: Date.now(),
+                isCurrentUser: true,
+              });
+            }
+            list.sort((a, b) => {
+              if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+              return (b.correctCount || 0) - (a.correctCount || 0);
+            });
+          }
+          setLeaderboardEntries(list);
+          saveLeaderboard(list);
+          return;
+        }
       }
+
+      // If Supabase returned empty or error, fallback to local storage
+      const local = loadLeaderboard(currentUserRef.current);
+      setLeaderboardEntries(local);
     } catch (e) {
       console.error('Failed to fetch online leaderboard', e);
+      const local = loadLeaderboard(currentUserRef.current);
+      setLeaderboardEntries(local);
     } finally {
       setIsLoadingLeaderboard(false);
     }
@@ -230,20 +276,20 @@ export default function App() {
   // Handle classification result from WebcamScanner
   const handleClassified = useCallback(
     async (result: WasteClassificationResult) => {
-      // 1. Strict verification: ONLY award points if source is webcam scanning
-      const isWebcamScan = result.source === 'webcam' && !result.isReferenceOnly;
-      
+      // 1. Verification: Award points for both live camera scanning and file uploads (unless reference only)
+      const isValidScan = (result.source === 'webcam' || result.source === 'file_upload' || !result.source) && !result.isReferenceOnly;
+
       // Calculate points strictly according to STEM specification:
       // Hữu cơ -> +1, Tái chế -> +2, Vô cơ -> +3
       let pointsToAward = 0;
-      if (isWebcamScan) {
+      if (isValidScan) {
         if (result.category === 'organic') pointsToAward = 1;
         else if (result.category === 'recyclable') pointsToAward = 2;
         else if (result.category === 'inorganic') pointsToAward = 3;
         else pointsToAward = result.points || 1;
       }
 
-      // Set active notification toast
+      // Display floating notification
       const displayResult: WasteClassificationResult = {
         ...result,
         points: pointsToAward,
@@ -256,21 +302,105 @@ export default function App() {
         setTimeout(() => setRecentPointChange(null), 3000);
       }
 
-      if (!isWebcamScan) {
+      if (!isValidScan || pointsToAward <= 0) {
         return;
       }
 
-      const activeUserName = currentUser ? currentUser.name : 'Thí sinh STEM';
-      const activeOrg = currentUser ? currentUser.organization || 'Khối Sáng Tạo STEM' : 'Khối Sáng Tạo STEM';
-      const activeAvatar = currentUser ? currentUser.avatar : '🌱';
+      // 2. IMMEDIATE OPTIMISTIC LOCAL STATE UPDATE (Ensures points NEVER fail to register)
+      let activeUser = currentUser;
+      if (!activeUser) {
+        activeUser = {
+          id: 'user-' + Date.now(),
+          name: 'Thí sinh STEM',
+          organization: 'Khối Sáng Tạo STEM',
+          avatar: '🌱',
+          totalPoints: 0,
+          correctCount: 0,
+          organicCount: 0,
+          recyclableCount: 0,
+          inorganicCount: 0,
+          createdAt: Date.now(),
+        };
+      }
 
-      // 2. PRIMARY STORAGE: Record directly to Google Sheets Online Web App
+      const wasPoints = activeUser.totalPoints;
+      const newPoints = wasPoints + pointsToAward;
+      const newCount = (activeUser.correctCount || 0) + 1;
+
+      const updatedUser: UserProfile = {
+        ...activeUser,
+        totalPoints: newPoints,
+        correctCount: newCount,
+        organicCount: (activeUser.organicCount || 0) + (result.category === 'organic' ? 1 : 0),
+        recyclableCount: (activeUser.recyclableCount || 0) + (result.category === 'recyclable' ? 1 : 0),
+        inorganicCount: (activeUser.inorganicCount || 0) + (result.category === 'inorganic' ? 1 : 0),
+      };
+
+      // Update current user in memory and localStorage
+      setCurrentUser(updatedUser);
+      saveUserProfile(updatedUser);
+
+      if (newPoints >= 20 && wasPoints < 20) {
+        playVictorySound();
+      }
+
+      // Record to local classification history
+      const newRecord: WasteHistoryRecord = {
+        ...result,
+        points: pointsToAward,
+        id: 'record-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        timestamp: Date.now(),
+        userName: updatedUser.name,
+      };
+      setHistory((prev) => {
+        const next = [newRecord, ...prev];
+        saveHistory(next);
+        return next;
+      });
+
+      // Update Leaderboard immediately on screen so ranking changes in real-time
+      setLeaderboardEntries((prev) => {
+        let list = [...prev];
+        const existingIdx = list.findIndex(
+          (e) => e.id === updatedUser.id || e.name.trim().toLowerCase() === updatedUser.name.trim().toLowerCase()
+        );
+        const newEntry: LeaderboardEntry = {
+          id: updatedUser.id,
+          name: updatedUser.name,
+          email: updatedUser.email,
+          organization: updatedUser.organization || 'Khối Sáng Tạo STEM',
+          totalPoints: updatedUser.totalPoints,
+          correctCount: updatedUser.correctCount || 0,
+          avatar: updatedUser.avatar || '🌱',
+          levelTitle: getLevelTitle(updatedUser.totalPoints),
+          lastActive: Date.now(),
+          isCurrentUser: true,
+        };
+
+        if (existingIdx >= 0) {
+          list[existingIdx] = newEntry;
+        } else {
+          list.push(newEntry);
+        }
+
+        list.sort((a, b) => {
+          if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+          if ((b.correctCount || 0) !== (a.correctCount || 0)) return (b.correctCount || 0) - (a.correctCount || 0);
+          return b.lastActive - a.lastActive;
+        });
+
+        saveLeaderboard(list);
+        return list;
+      });
+
+      // 3. BACKGROUND ONLINE SYNC (Google Sheets & Supabase)
+      // Google Sheets sync
       if (isGoogleSheetsConfigured()) {
         try {
           const sheetRes = await recordWasteToGoogleSheets({
-            playerName: activeUserName,
-            organization: activeOrg,
-            avatar: activeAvatar,
+            playerName: updatedUser.name,
+            organization: updatedUser.organization || 'Khối Sáng Tạo STEM',
+            avatar: updatedUser.avatar || '🌱',
             itemName: result.itemName,
             category: result.category,
             confidence: result.confidence,
@@ -278,128 +408,44 @@ export default function App() {
 
           if (sheetRes.success) {
             setIsGoogleSheetsActive(true);
-
-            // Update current user points
-            if (currentUser) {
-              const newPoints = sheetRes.updatedPlayer
-                ? sheetRes.updatedPlayer.totalPoints
-                : currentUser.totalPoints + pointsToAward;
-              const newCount = sheetRes.updatedPlayer?.correctCount ?? currentUser.correctCount + 1;
-
-              const updatedUser: UserProfile = {
-                ...currentUser,
-                totalPoints: newPoints,
-                correctCount: newCount,
-                organicCount: currentUser.organicCount + (result.category === 'organic' ? 1 : 0),
-                recyclableCount: currentUser.recyclableCount + (result.category === 'recyclable' ? 1 : 0),
-                inorganicCount: currentUser.inorganicCount + (result.category === 'inorganic' ? 1 : 0),
-              };
-              setCurrentUser(updatedUser);
-              saveUserProfile(updatedUser);
-
-              if (newPoints >= 20 && currentUser.totalPoints < 20) {
-                playVictorySound();
-              }
-            }
-
-            // Immediately sync updated leaderboard and history from Google Sheets
             syncWithGoogleSheets(false);
           }
         } catch (e) {
-          console.error('Google Sheets record failed, falling back:', e);
+          console.warn('Google Sheets background sync notice:', e);
         }
       }
 
-      // 3. SECONDARY STORAGE: Record to Supabase if configured
-      if (isSupabaseLive && currentUser) {
+      // Supabase sync
+      if (isSupabaseLive) {
         try {
           const onlineRes = await recordClassificationOnline({
             itemName: result.itemName,
             category: result.category,
             points: pointsToAward,
-            source: 'webcam',
+            source: result.source || 'webcam',
             confidence: result.confidence,
+            userId: updatedUser.id,
+            userName: updatedUser.name,
+            organization: updatedUser.organization,
+            avatar: updatedUser.avatar,
           });
 
-          if (onlineRes.success) {
-            const newTotalPoints = onlineRes.totalPoints ?? (currentUser.totalPoints + pointsToAward);
-            const newCorrectCount = onlineRes.correctCount ?? (currentUser.correctCount + 1);
-
-            const updatedUser: UserProfile = {
-              ...currentUser,
-              totalPoints: newTotalPoints,
-              correctCount: newCorrectCount,
-              organicCount: currentUser.organicCount + (result.category === 'organic' ? 1 : 0),
-              recyclableCount: currentUser.recyclableCount + (result.category === 'recyclable' ? 1 : 0),
-              inorganicCount: currentUser.inorganicCount + (result.category === 'inorganic' ? 1 : 0),
+          if (onlineRes.success && onlineRes.totalPoints !== undefined && onlineRes.totalPoints > newPoints) {
+            const confirmedUser: UserProfile = {
+              ...updatedUser,
+              totalPoints: onlineRes.totalPoints,
+              correctCount: onlineRes.correctCount ?? updatedUser.correctCount,
             };
-
-            setCurrentUser(updatedUser);
-            saveUserProfile(updatedUser);
+            setCurrentUser(confirmedUser);
+            saveUserProfile(confirmedUser);
             refreshLeaderboardOnline();
           }
         } catch (err) {
-          console.error('Error saving classification to Supabase:', err);
+          console.warn('Supabase background sync notice:', err);
         }
-      }
-
-      // 4. Local state update if neither online database was ready
-      if (!isGoogleSheetsConfigured() && !isSupabaseLive) {
-        let updatedUser: UserProfile;
-        if (currentUser) {
-          const wasPoints = currentUser.totalPoints;
-          const newPoints = wasPoints + pointsToAward;
-
-          updatedUser = {
-            ...currentUser,
-            totalPoints: newPoints,
-            correctCount: (currentUser.correctCount || 0) + 1,
-            organicCount: currentUser.organicCount + (result.category === 'organic' ? 1 : 0),
-            recyclableCount: currentUser.recyclableCount + (result.category === 'recyclable' ? 1 : 0),
-            inorganicCount: currentUser.inorganicCount + (result.category === 'inorganic' ? 1 : 0),
-          };
-
-          setCurrentUser(updatedUser);
-          saveUserProfile(updatedUser);
-
-          if (newPoints >= 20 && wasPoints < 20) {
-            playVictorySound();
-          }
-        } else {
-          // Guest user
-          updatedUser = {
-            id: 'user-guest-' + Date.now(),
-            name: 'Thí sinh Khách',
-            organization: 'Khối Sáng Tạo STEM',
-            avatar: '🌱',
-            totalPoints: pointsToAward,
-            correctCount: 1,
-            organicCount: result.category === 'organic' ? 1 : 0,
-            recyclableCount: result.category === 'recyclable' ? 1 : 0,
-            inorganicCount: result.category === 'inorganic' ? 1 : 0,
-            createdAt: Date.now(),
-          };
-          setCurrentUser(updatedUser);
-          saveUserProfile(updatedUser);
-        }
-
-        // Add to local history log
-        const newRecord: WasteHistoryRecord = {
-          ...result,
-          points: pointsToAward,
-          id: 'record-' + Date.now(),
-          timestamp: Date.now(),
-          userName: currentUser ? currentUser.name : 'Thí sinh Khách',
-        };
-
-        setHistory((prev) => {
-          const next = [newRecord, ...prev];
-          saveHistory(next);
-          return next;
-        });
       }
     },
-    [currentUser, isSupabaseLive, refreshLeaderboardOnline]
+    [currentUser, isSupabaseLive, refreshLeaderboardOnline, syncWithGoogleSheets]
   );
 
   // Handle user login / switch
@@ -407,6 +453,7 @@ export default function App() {
     setCurrentUser(profile);
     saveUserProfile(profile);
     setIsLoginModalOpen(false);
+    setLeaderboardEntries(loadLeaderboard(profile));
     refreshLeaderboardOnline();
   };
 
