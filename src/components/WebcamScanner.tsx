@@ -21,7 +21,11 @@ import {
   HelpCircle,
   Clock,
   Database,
-  Lock
+  Lock,
+  Video,
+  VideoOff,
+  CameraOff,
+  Repeat
 } from 'lucide-react';
 import {
   WasteClassificationResult,
@@ -65,6 +69,7 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
 
   // Camera state
   const [cameraActive, setCameraActive] = useState(false);
+  const [isStartingCamera, setIsStartingCamera] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
   const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
@@ -73,10 +78,10 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
   const [lastScannedImage, setLastScannedImage] = useState<string | null>(null);
   const [activeCategoryFilter, setActiveCategoryFilter] = useState<'all' | WasteCategory>('all');
   const [autoDemoLoop, setAutoDemoLoop] = useState(false);
-  const [scanStatusText, setScanStatusText] = useState('SẴN SÀNG NHẬN DIỆN');
+  const [scanStatusText, setScanStatusText] = useState('CHỜ KÍCH HOẠT CAMERA');
 
-  // Anti-Cheat & Duplicate Prevention State
-  const [antiCheatEnabled, setAntiCheatEnabled] = useState(true);
+  // Anti-Cheat & Duplicate Prevention State (Default false to allow repeated scanning for points)
+  const [antiCheatEnabled, setAntiCheatEnabled] = useState(false);
   const [fingerprintRegistry, setFingerprintRegistry] = useState<ScannedFingerprintRecord[]>(() =>
     loadFingerprintRegistry()
   );
@@ -89,10 +94,23 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
   const [lastSimilarity, setLastSimilarity] = useState<number>(0);
   const [duplicateBlockedCount, setDuplicateBlockedCount] = useState(0);
 
+  // Stop video stream & turn off webcam hardware
+  const stopCamera = useCallback(() => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+    setIsStartingCamera(false);
+    setScanStatusText('CAMERA ĐÃ TẮT - BẤM ĐỂ BẬT LẠI');
+  }, []);
 
-  // Start video stream
+  // Start video stream only when explicitly triggered by user
   const startCamera = useCallback(async () => {
     setCameraError(null);
+    setIsStartingCamera(true);
+    setScanStatusText('ĐANG KẾT NỐI WEBCAM...');
     try {
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
@@ -127,29 +145,37 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
         };
       }
       setCameraActive(true);
-      setScanStatusText('CAMERA TRỰC TIẾP HOẠT ĐỘNG');
+      setIsStartingCamera(false);
+      setScanStatusText('CAMERA TRỰC TIẾP SẴN SÀNG');
     } catch (err: any) {
       console.warn('Camera access denied or failed:', err);
       setCameraActive(false);
+      setIsStartingCamera(false);
       setCameraError(
         err.name === 'NotAllowedError'
-          ? 'Quyền truy cập camera bị từ chối. Vui lòng cho phép quyền camera trong trình duyệt hoặc dùng chế độ Demo mô phỏng.'
-          : 'Không thể kết nối webcam. Vui lòng kiểm tra thiết bị hoặc sử dụng chế độ Demo mô phỏng.'
+          ? 'Quyền truy cập camera bị từ chối trong trình duyệt. Vui lòng cho phép quyền Camera trên thanh địa chỉ để quét trực tiếp.'
+          : 'Không thể kết nối webcam. Vui lòng kiểm tra thiết bị hoặc sử dụng chế độ tải ảnh / mô phỏng.'
       );
-      setScanStatusText('CHẾ ĐỘ MÔ PHỎNG SẴN SÀNG');
+      setScanStatusText('CHƯA CẤP QUYỀN CAMERA');
     }
   }, [facingMode]);
 
-  // Cleanup stream on unmount
+  // Clean up stream on unmount ONLY - do not auto-start camera on page enter
   useEffect(() => {
-    startCamera();
     return () => {
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach((track) => track.stop());
       }
     };
-  }, [startCamera]);
+  }, []);
+
+  // When facingMode changes, if camera was already running, switch it
+  useEffect(() => {
+    if (cameraActive) {
+      startCamera();
+    }
+  }, [facingMode]);
 
   // Flip camera
   const handleFlipCamera = () => {
@@ -298,7 +324,9 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
           setPreviousFingerprint(currentFingerprint);
         }
         setPreviousItemName(classified.itemName);
-        setWaitingForBinDeposit(true);
+        if (antiCheatEnabled) {
+          setWaitingForBinDeposit(true);
+        }
 
         playPointSound(classified.points);
         onClassified(classified);
@@ -340,7 +368,9 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
         setPreviousFingerprint(currentFingerprint);
       }
       setPreviousItemName(classified.itemName);
-      setWaitingForBinDeposit(true);
+      if (antiCheatEnabled) {
+        setWaitingForBinDeposit(true);
+      }
 
       playPointSound(classified.points);
       onClassified(classified);
@@ -353,8 +383,7 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
   // Trigger capture & classify from live webcam
   const handleCaptureLive = () => {
     if (!cameraActive) {
-      // Trigger random demo item
-      handleTriggerDemoItem(DEMO_WASTE_ITEMS[Math.floor(Math.random() * DEMO_WASTE_ITEMS.length)]);
+      startCamera();
       return;
     }
     const frame = captureFrame();
@@ -525,35 +554,104 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
 
         {/* Fallback Display if camera is inactive */}
         {!cameraActive && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-950/90 backdrop-blur-sm z-10">
-            <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mb-3 shadow-lg shadow-emerald-500/10">
-              <Camera className="w-8 h-8" />
-            </div>
-            <h3 className="text-base font-bold text-slate-100">
-              {cameraError ? 'Không thể mở Camera' : 'Đang khởi động Camera AI...'}
-            </h3>
-            <p className="text-xs text-slate-400 max-w-sm mt-1 mb-4 leading-relaxed">
-              {cameraError || 'Vui lòng chấp nhận quyền truy cập webcam trong trình duyệt để quét rác trực tiếp.'}
-            </p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-950/95 backdrop-blur-md z-10">
+            {isStartingCamera ? (
+              <div className="flex flex-col items-center animate-in fade-in zoom-in-95 duration-200">
+                <RefreshCw className="w-12 h-12 text-cyan-400 animate-spin mb-3" />
+                <h3 className="text-base font-black text-slate-100 font-mono tracking-wide">
+                  ĐANG KẾT NỐI WEBCAM...
+                </h3>
+                <p className="text-xs text-slate-400 mt-1 max-w-xs leading-relaxed">
+                  Vui lòng bấm &ldquo;Cho phép&rdquo; (Allow) nếu trình duyệt yêu cầu cấp quyền Camera.
+                </p>
+              </div>
+            ) : cameraError ? (
+              <div className="flex flex-col items-center animate-in fade-in duration-200">
+                <div className="w-16 h-16 rounded-2xl bg-rose-500/10 border-2 border-rose-500/30 flex items-center justify-center text-rose-400 mb-3 shadow-lg shadow-rose-500/20">
+                  <CameraOff className="w-8 h-8" />
+                </div>
+                <h3 className="text-base font-black text-rose-300">
+                  Không Thể Mở Camera
+                </h3>
+                <p className="text-xs text-slate-300 max-w-sm mt-1 mb-4 leading-relaxed">
+                  {cameraError}
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    id="btn-retry-camera"
+                    onClick={() => {
+                      playClickSound();
+                      startCamera();
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 shadow-md shadow-emerald-500/30 active:scale-95 transition-all cursor-pointer"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Thử lại bật Camera</span>
+                  </button>
+                  <button
+                    id="btn-upload-fallback"
+                    onClick={() => {
+                      playClickSound();
+                      fileInputRef.current?.click();
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black bg-slate-800 hover:bg-slate-700 text-slate-200 border-2 border-slate-700 active:scale-95 transition-all cursor-pointer"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>Tải ảnh rác lên</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center max-w-md animate-in fade-in duration-300">
+                <div className="relative mb-3">
+                  <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-emerald-500/20 via-teal-500/10 to-cyan-500/20 border-2 border-emerald-400/50 flex items-center justify-center text-emerald-400 shadow-2xl shadow-emerald-500/20">
+                    <Camera className="w-10 h-10 animate-pulse" />
+                  </div>
+                  <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-4 w-4 bg-emerald-500"></span>
+                  </span>
+                </div>
 
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <button
-                id="btn-retry-camera"
-                onClick={startCamera}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Thử lại Camera</span>
-              </button>
-              <button
-                id="btn-upload-fallback"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span>Tải ảnh rác lên</span>
-              </button>
-            </div>
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-950/80 border border-emerald-500/40 text-[11px] font-black text-emerald-300 mb-2">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>SẴN SÀNG QUÉT RÁC BẰNG CAMERA</span>
+                </div>
+
+                <h3 className="text-lg sm:text-xl font-black text-slate-100 tracking-tight">
+                  Bấm Nút Để Sử Dụng Camera Quét
+                </h3>
+                <p className="text-xs text-slate-400 mt-1 mb-5 leading-relaxed">
+                  Webcam chỉ được kích hoạt khi bạn chủ động nhấn nút. Đưa mẫu rác thật vào khung hình để AI nhận diện và tích điểm phân loại!
+                </p>
+
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    id="btn-enable-camera-hero"
+                    onClick={() => {
+                      playClickSound();
+                      startCamera();
+                    }}
+                    className="flex items-center gap-2.5 px-6 py-3.5 rounded-2xl font-black text-sm text-slate-950 bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400 hover:from-emerald-300 hover:via-teal-200 hover:to-cyan-300 shadow-xl shadow-emerald-500/40 ring-4 ring-emerald-400/40 hover:ring-emerald-300 hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                  >
+                    <Video className="w-5 h-5 text-slate-950" />
+                    <span>BẬT CAMERA ĐỂ QUÉT</span>
+                  </button>
+
+                  <button
+                    id="btn-upload-hero"
+                    onClick={() => {
+                      playClickSound();
+                      fileInputRef.current?.click();
+                    }}
+                    className="flex items-center gap-2 px-4 py-3 rounded-2xl font-bold text-xs bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border-2 border-slate-700 hover:border-slate-500 shadow-md active:scale-95 transition-all cursor-pointer"
+                  >
+                    <Upload className="w-4 h-4 text-cyan-400" />
+                    <span>Tải ảnh từ máy</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -574,6 +672,19 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
                   className="p-2 rounded-xl bg-slate-900/90 text-slate-300 hover:text-white border border-slate-700 backdrop-blur-sm transition-colors pointer-events-auto"
                 >
                   <SwitchCamera className="w-4 h-4" />
+                </button>
+              )}
+              {cameraActive && (
+                <button
+                  onClick={() => {
+                    playClickSound();
+                    stopCamera();
+                  }}
+                  title="Tắt Camera"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-900/90 text-rose-300 hover:text-rose-100 hover:bg-rose-950 border border-rose-500/40 backdrop-blur-sm transition-colors pointer-events-auto text-[11px] font-bold"
+                >
+                  <VideoOff className="w-3.5 h-3.5" />
+                  <span>Tắt cam</span>
                 </button>
               )}
               <div className="hidden sm:flex items-center gap-1.5 bg-slate-950/85 backdrop-blur-md px-2.5 py-1 rounded-full border border-slate-700/80 text-[10px] font-mono text-cyan-400 font-bold">
@@ -611,7 +722,7 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
           {/* Bottom HUD bar with category hints */}
           <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
             <div className="bg-slate-950/80 px-2.5 py-1 rounded-md border border-slate-800 hidden sm:block">
-              ĐƯA MẪU RÁC VÀO TÂM KHUNG QUÉT
+              {cameraActive ? 'ĐƯA MẪU RÁC VÀO TÂM KHUNG QUÉT' : 'BẤM "SỬ DỤNG CAMERA" ĐỂ BẬT QUÉT TRỰC TIẾP'}
             </div>
             <div className="bg-slate-950/80 px-2.5 py-1 rounded-md border border-slate-800 text-slate-300">
               PHÍM TẮT: <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-cyan-300 font-bold">SPACE</kbd>
@@ -661,24 +772,63 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
 
       {/* Main Control Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-slate-900/95 border-2 border-slate-700/80 rounded-2xl shadow-2xl">
-        {/* Shutter Capture Button */}
+        {/* Shutter Capture / Enable Camera Buttons */}
         <div className="flex items-center gap-2.5 flex-1 sm:flex-initial">
-          <button
-            id="btn-capture-scan"
-            onClick={() => {
-              playClickSound();
-              handleCaptureLive();
-            }}
-            disabled={isProcessing}
-            className={`flex-1 sm:flex-initial flex items-center justify-center gap-2.5 px-6 py-3 rounded-xl font-black text-sm tracking-wide shadow-2xl transition-all cursor-pointer ${
-              isProcessing
-                ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                : 'bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400 hover:from-emerald-300 hover:via-teal-200 hover:to-cyan-300 text-slate-950 shadow-emerald-500/30 hover:shadow-emerald-500/50 ring-2 ring-emerald-300/60 hover:ring-emerald-200 hover:scale-[1.03] active:scale-95'
-            }`}
-          >
-            <Camera className="w-5 h-5 text-slate-950" />
-            <span>{cameraActive ? 'QUÉT & NHẬN DIỆN AI' : 'MÔ PHỎNG QUÉT RÁC'}</span>
-          </button>
+          {cameraActive ? (
+            <>
+              <button
+                id="btn-capture-scan"
+                onClick={() => {
+                  playClickSound();
+                  handleCaptureLive();
+                }}
+                disabled={isProcessing}
+                className={`flex-1 sm:flex-initial flex items-center justify-center gap-2.5 px-6 py-3 rounded-xl font-black text-sm tracking-wide shadow-2xl transition-all cursor-pointer ${
+                  isProcessing
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                    : 'bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400 hover:from-emerald-300 hover:via-teal-200 hover:to-cyan-300 text-slate-950 shadow-emerald-500/30 hover:shadow-emerald-500/50 ring-2 ring-emerald-300/60 hover:ring-emerald-200 hover:scale-[1.03] active:scale-95'
+                }`}
+              >
+                <Camera className="w-5 h-5 text-slate-950" />
+                <span>QUÉT & NHẬN DIỆN AI</span>
+              </button>
+
+              <button
+                id="btn-stop-camera"
+                onClick={() => {
+                  playClickSound();
+                  stopCamera();
+                }}
+                title="Tắt Camera"
+                className="flex items-center gap-1.5 px-3 py-3 rounded-xl bg-slate-800 hover:bg-rose-950/70 text-slate-300 hover:text-rose-300 border-2 border-slate-700 hover:border-rose-500/60 shadow-md transition-all active:scale-95 cursor-pointer font-bold text-xs"
+              >
+                <VideoOff className="w-4 h-4 text-rose-400" />
+                <span className="hidden sm:inline">Tắt Cam</span>
+              </button>
+            </>
+          ) : (
+            <button
+              id="btn-start-camera-bar"
+              onClick={() => {
+                playClickSound();
+                startCamera();
+              }}
+              disabled={isStartingCamera}
+              className="flex-1 sm:flex-initial flex items-center justify-center gap-2.5 px-6 py-3 rounded-xl font-black text-sm tracking-wide shadow-2xl transition-all cursor-pointer bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400 hover:from-emerald-300 hover:via-teal-200 hover:to-cyan-300 text-slate-950 shadow-emerald-500/30 hover:shadow-emerald-500/50 ring-2 ring-emerald-300/60 hover:ring-emerald-200 hover:scale-[1.03] active:scale-95"
+            >
+              {isStartingCamera ? (
+                <>
+                  <RefreshCw className="w-5 h-5 text-slate-950 animate-spin" />
+                  <span>ĐANG MỞ CAMERA...</span>
+                </>
+              ) : (
+                <>
+                  <Video className="w-5 h-5 text-slate-950" />
+                  <span>SỬ DỤNG CAMERA ĐỂ QUÉT</span>
+                </>
+              )}
+            </button>
+          )}
 
           <button
             id="btn-upload-photo"
@@ -709,26 +859,43 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
             <span>Sổ Vân Tay ({fingerprintRegistry.length})</span>
           </button>
 
-          {/* Toggle Anti-Cheat Button */}
+          {/* Toggle Scan Mode: Free repeated scans vs Strict anti-cheat */}
           <button
             id="btn-toggle-anti-cheat"
             onClick={() => {
               playClickSound();
               setAntiCheatEnabled(!antiCheatEnabled);
             }}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black border-2 transition-all cursor-pointer ${
-              antiCheatEnabled
-                ? 'bg-gradient-to-r from-emerald-950 via-teal-950 to-emerald-900 border-emerald-400 text-emerald-200 shadow-lg shadow-emerald-500/30 ring-2 ring-emerald-400/40 hover:scale-105 active:scale-95'
-                : 'bg-slate-800/90 border-slate-600 text-slate-300 hover:border-slate-400 hover:text-white hover:scale-105 active:scale-95'
+            className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-black border-2 transition-all cursor-pointer shadow-md ${
+              !antiCheatEnabled
+                ? 'bg-gradient-to-r from-emerald-900/90 via-teal-900/90 to-cyan-900/90 border-emerald-400 text-emerald-200 shadow-emerald-500/30 ring-2 ring-emerald-400/50 hover:scale-105 active:scale-95'
+                : 'bg-gradient-to-r from-amber-950/90 via-rose-950/90 to-slate-900/90 border-amber-400 text-amber-200 shadow-amber-500/30 ring-2 ring-amber-400/50 hover:scale-105 active:scale-95'
             }`}
-            title="Bật/Tắt cơ chế phát hiện trùng lặp hình ảnh để chống gian lận lặp lại điểm"
+            title="Nhấn để chuyển đổi giữa Chế độ Cho phép quét lặp 1 ảnh nhiều lần lấy điểm hoặc Khóa chống gian lận"
           >
-            {antiCheatEnabled ? (
-              <ShieldCheck className="w-4 h-4 text-emerald-400 animate-pulse" />
+            {!antiCheatEnabled ? (
+              <>
+                <Repeat className="w-4 h-4 text-emerald-300 animate-spin-slow" />
+                <div className="flex flex-col text-left">
+                  <span className="text-[10px] uppercase text-emerald-400 font-extrabold tracking-wider leading-none">Chế Độ Quét</span>
+                  <span className="text-xs text-white font-black leading-tight">Quét Lặp Nhận Điểm: BẬT</span>
+                </div>
+                <span className="ml-1 px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 text-[10px] font-mono font-bold">
+                  TỰ DO
+                </span>
+              </>
             ) : (
-              <ShieldOff className="w-4 h-4 text-slate-400" />
+              <>
+                <ShieldCheck className="w-4 h-4 text-amber-400 animate-pulse" />
+                <div className="flex flex-col text-left">
+                  <span className="text-[10px] uppercase text-amber-400 font-extrabold tracking-wider leading-none">Chế Độ Quét</span>
+                  <span className="text-xs text-white font-black leading-tight">Khóa Chống Gian Lận: BẬT</span>
+                </div>
+                <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/40 text-[10px] font-mono font-bold">
+                  STEM
+                </span>
+              </>
             )}
-            <span>Chống Gian Lận {antiCheatEnabled ? '(BẬT)' : '(TẮT)'}</span>
           </button>
 
           {/* Similarity Live Gauge if there is a previous sample */}
