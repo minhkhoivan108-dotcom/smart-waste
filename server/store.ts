@@ -213,6 +213,60 @@ export function upsertPlayer(profile: {
   return newPlayer;
 }
 
+export async function resetAllPlayerPoints(): Promise<{
+  count: number;
+  leaderboard: (StoredPlayer & { levelTitle: string })[];
+}> {
+  // Reset all players' scores and counters to 0
+  for (const player of cachedData.players) {
+    player.totalPoints = 0;
+    player.correctCount = 0;
+    player.organicCount = 0;
+    player.recyclableCount = 0;
+    player.inorganicCount = 0;
+    player.lastActive = Date.now();
+  }
+
+  // Clear classification history
+  cachedData.history = [];
+
+  // Save to local JSON disk
+  saveDataToDisk();
+
+  // Sync reset to Supabase players table if accessible
+  try {
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    await supabase
+      .from('players')
+      .update({
+        total_points: 0,
+        correct_count: 0,
+        organic_count: 0,
+        recyclable_count: 0,
+        inorganic_count: 0,
+        updated_at: new Date().toISOString(),
+      })
+      .not('id', 'is', null);
+  } catch (err) {
+    console.warn('Notice resetting Supabase players points:', err);
+  }
+
+  // Broadcast reset event to all connected devices via SSE
+  const leaderboard = getLeaderboard();
+  for (const listener of listeners) {
+    try {
+      listener({ type: 'leaderboard_reset', leaderboard });
+    } catch (e) {
+      console.warn('Listener notice on leaderboard reset:', e);
+    }
+  }
+
+  return {
+    count: cachedData.players.length,
+    leaderboard,
+  };
+}
+
 export function recordClassification(params: {
   userId?: string;
   userName: string;

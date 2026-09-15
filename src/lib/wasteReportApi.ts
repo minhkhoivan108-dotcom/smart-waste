@@ -87,7 +87,7 @@ export async function submitWasteReport(
         return {
           success: false,
           approved: false,
-          error: 'Dung lượng hình ảnh gửi lên quá lớn so với giới hạn máy chủ. Hệ thống đã tự động nén ảnh, vui lòng bấm gửi lại.',
+          error: 'Dung lượng hình ảnh gửi lên vượt quá giới hạn máy chủ (tối đa 100MB). Hệ thống đã tự động tối ưu hóa, vui lòng bấm gửi lại.',
         };
       }
 

@@ -7,6 +7,7 @@ import {
   initStore,
   getLeaderboard,
   upsertPlayer,
+  resetAllPlayerPoints,
   recordClassification,
   getHistory,
   subscribeToStoreUpdates,
@@ -25,9 +26,9 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-// Support larger payload for images and webcam base64
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
+// Support larger payload for images and webcam base64 (Upgraded to 100MB)
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ limit: "100mb", extended: true }));
 
 // Express JSON body error handler - return pure JSON instead of default HTML error page
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -35,7 +36,7 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
     return res.status(413).json({
       success: false,
       approved: false,
-      error: 'Dung lượng hình ảnh gửi lên quá lớn. Hệ thống đã tối ưu hoá tự động, vui lòng thử lại.',
+      error: 'Dung lượng hình ảnh gửi lên quá lớn (vượt quá giới hạn 100MB). Vui lòng chọn ảnh có kích thước dưới 100MB.',
     });
   }
   if (err instanceof SyntaxError && 'body' in err) {
@@ -387,6 +388,22 @@ app.post("/api/players/register", (req, res) => {
       leaderboard: getLeaderboard(),
     });
   } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3b. Reset all players points to 0 (Administrator / Competition reset)
+app.post("/api/players/reset-all-points", async (_req, res) => {
+  try {
+    const result = await resetAllPlayerPoints();
+    return res.json({
+      success: true,
+      message: `Đã đặt điểm toàn bộ ${result.count} tài khoản về 0 thành công.`,
+      count: result.count,
+      leaderboard: result.leaderboard,
+    });
+  } catch (err: any) {
+    console.error("Lỗi khi reset điểm tài khoản:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
