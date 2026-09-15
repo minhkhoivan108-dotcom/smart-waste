@@ -256,7 +256,20 @@ Hãy phản hồi kết quả dưới dạng JSON theo đúng schema.`;
         },
       });
 
-      const parsed = JSON.parse(response.text || '{}');
+      let rawText = (response.text || '{}').trim();
+      if (rawText.startsWith('```json')) {
+        rawText = rawText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (rawText.startsWith('```')) {
+        rawText = rawText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
+
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(rawText);
+      } catch (parseErr) {
+        console.warn('Failed to parse Gemini response JSON, raw text was:', rawText.slice(0, 100));
+        parsed = {};
+      }
 
       const isAIGenerated = Boolean(parsed.isAIGenerated);
       const aiAuthenticityPassed = parsed.aiAuthenticityPassed !== undefined ? Boolean(parsed.aiAuthenticityPassed) : !isAIGenerated;

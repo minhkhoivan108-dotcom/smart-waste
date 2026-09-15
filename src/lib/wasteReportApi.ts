@@ -38,13 +38,73 @@ export async function submitWasteReport(
   payload: WasteReportSubmissionPayload
 ): Promise<SubmitReportResult> {
   try {
-    const res = await fetch('/api/waste-reports/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 seconds timeout
 
-    const data = await res.json();
+    let res: Response;
+    try {
+      res = await fetch('/api/waste-reports/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (fetchErr: any) {
+      clearTimeout(timeoutId);
+      if (fetchErr.name === 'AbortError') {
+        return {
+          success: false,
+          approved: false,
+          error: 'Thời gian kết nối kiểm duyệt AI quá lâu (quá 45 giây). Vui lòng kiểm tra lại kết nối mạng và thử gửi lại.',
+        };
+      }
+      return {
+        success: false,
+        approved: false,
+        error: 'Không thể kết nối đến máy chủ: ' + (fetchErr.message || 'Lỗi mạng'),
+      };
+    }
+    clearTimeout(timeoutId);
+
+    // Safely check content-type before parsing JSON to prevent "Unexpected token '<' / 'T'"
+    const contentType = res.headers.get('content-type') || '';
+    let data: any = null;
+
+    if (contentType.includes('application/json')) {
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        console.warn('Failed to parse JSON response:', jsonErr);
+      }
+    }
+
+    if (!data) {
+      // Non-JSON response (HTML error page like "The page cannot be displayed", 413, 502, 504)
+      const text = await res.text().catch(() => '');
+      console.warn('Non-JSON server response:', res.status, text.slice(0, 150));
+
+      if (res.status === 413) {
+        return {
+          success: false,
+          approved: false,
+          error: 'Dung lượng hình ảnh gửi lên quá lớn so với giới hạn máy chủ. Hệ thống đã tự động nén ảnh, vui lòng bấm gửi lại.',
+        };
+      }
+
+      if (res.status === 502 || res.status === 504 || res.status === 503) {
+        return {
+          success: false,
+          approved: false,
+          error: 'Máy chủ kiểm duyệt AI đang phản hồi chậm hoặc tạm thời bận. Vui lòng bấm "Gửi bài phản ánh" để thử lại sau 5 giây.',
+        };
+      }
+
+      return {
+        success: false,
+        approved: false,
+        error: `Máy chủ phản hồi mã lỗi ${res.status}. Vui lòng thử lại sau giây lát.`,
+      };
+    }
 
     if (res.status === 422 || data.approved === false) {
       // Rejection by moderation

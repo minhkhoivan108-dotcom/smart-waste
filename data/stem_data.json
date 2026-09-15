@@ -11,7 +11,7 @@
       "organicCount": 0,
       "recyclableCount": 0,
       "inorganicCount": 0,
-      "lastActive": 1789396301822,
+      "lastActive": 1789450711673,
       "createdAt": 1789184434377
     },
     {
@@ -44,5 +44,34 @@
     }
   ],
   "history": [],
-  "reports": []
+  "reports": [
+    {
+      "id": "rep-1789450713257-9bxo",
+      "authorId": "test-user-1",
+      "authorName": "Nguyễn Văn An",
+      "authorAvatar": "🌱",
+      "authorOrg": "Cộng đồng EcoSort Quận 1",
+      "location": "Khu vực đường Nguyễn Huệ, Quận 1, TP Hồ Chí Minh",
+      "description": "Khu vực này có nhiều bao rác thải sinh hoạt và chai nhựa tồn đọng bốc mùi cần đội vệ sinh môi trường đến thu gom gấp.",
+      "imageUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=",
+      "wasteTypeDetected": "Rác thải sinh hoạt & Bao bì nhựa",
+      "severityLevel": "medium",
+      "moderationStatus": "approved",
+      "moderationDetails": {
+        "approved": true,
+        "imageCheckPassed": true,
+        "textCheckPassed": true,
+        "isAIGenerated": false,
+        "aiAuthenticityPassed": true,
+        "wasteTypeDetected": "Rác thải sinh hoạt & Bao bì nhựa",
+        "severityLevel": "medium",
+        "summary": "Khu vực này có nhiều bao rác thải sinh hoạt và chai nhựa tồn đọng bốc mùi cần đội vệ sinh ...",
+        "checkedAt": 1789450713257,
+        "moderatedBy": "EcoSort AI Moderation Engine"
+      },
+      "status": "reported",
+      "createdAt": 1789450713257,
+      "upvotes": 1
+    }
+  ]
 }

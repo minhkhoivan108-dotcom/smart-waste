@@ -25,8 +25,28 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-// Support larger payload for webcam image base64
-app.use(express.json({ limit: "15mb" }));
+// Support larger payload for images and webcam base64
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// Express JSON body error handler - return pure JSON instead of default HTML error page
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err && (err.type === 'entity.too.large' || err.status === 413)) {
+    return res.status(413).json({
+      success: false,
+      approved: false,
+      error: 'Dung lượng hình ảnh gửi lên quá lớn. Hệ thống đã tối ưu hoá tự động, vui lòng thử lại.',
+    });
+  }
+  if (err instanceof SyntaxError && 'body' in err) {
+    return res.status(400).json({
+      success: false,
+      approved: false,
+      error: 'Dữ liệu gửi lên không đúng định dạng JSON hợp lệ.',
+    });
+  }
+  next(err);
+});
 
 // Lazy-initialized Gemini client
 let aiClient: GoogleGenAI | null = null;

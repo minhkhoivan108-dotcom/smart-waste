@@ -27,6 +27,50 @@ interface CreateReportModalProps {
   onReportCreated: (report: WasteReport) => void;
 }
 
+/**
+ * Automatically compress and downscale photos to max 1280px JPEG (~150KB-300KB)
+ * Eliminates 413 Payload Too Large and server timeouts while keeping high clarity for Gemini Vision
+ */
+function compressImage(fileOrDataUrl: File | string, maxDim = 1280, quality = 0.82): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(width, 1);
+      canvas.height = Math.max(height, 1);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(typeof fileOrDataUrl === 'string' ? fileOrDataUrl : '');
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => reject(new Error('Không thể tải tệp hình ảnh. Vui lòng thử lại với ảnh khác.'));
+
+    if (typeof fileOrDataUrl === 'string') {
+      img.src = fileOrDataUrl;
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => reject(new Error('Không thể đọc tệp hình ảnh từ thiết bị.'));
+      reader.readAsDataURL(fileOrDataUrl);
+    }
+  });
+}
+
 export const CreateReportModal: React.FC<CreateReportModalProps> = ({
   isOpen,
   onClose,
@@ -34,12 +78,13 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
   onReportCreated,
 }) => {
   const [imagePreview, setImagePreview] = useState<string>('');
+  const [isProcessingImage, setIsProcessingImage] = useState(false);
   const [location, setLocation] = useState('');
   const [description, setDescription] = useState('');
   const [authorName, setAuthorName] = useState(currentUser?.name || 'Người dân cộng đồng');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
-  const [moderationError, setModerationError] = useState<string | null>(null);
+  const [moderationError, setModerationError] = useState<{ message: string; isTechnical?: boolean } | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Camera state
@@ -97,16 +142,33 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
     const video = videoRef.current;
 
     if (!video.videoWidth || !video.videoHeight) {
-      setModerationError('Camera đang khởi động, vui lòng đợi 1 giây rồi nhấn "Chụp ảnh ngay".');
+      setModerationError({
+        message: 'Camera đang khởi động, vui lòng đợi 1 giây rồi nhấn "Chụp ảnh ngay".',
+        isTechnical: true,
+      });
       return;
     }
 
+    const rawW = video.videoWidth || 640;
+    const rawH = video.videoHeight || 480;
+    let targetW = rawW;
+    let targetH = rawH;
+    if (targetW > 1280 || targetH > 1280) {
+      if (targetW > targetH) {
+        targetH = Math.round((targetH * 1280) / targetW);
+        targetW = 1280;
+      } else {
+        targetW = Math.round((targetW * 1280) / targetH);
+        targetH = 1280;
+      }
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
+    canvas.width = targetW;
+    canvas.height = targetH;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(video, 0, 0, targetW, targetH);
 
       // Check average brightness to prevent black/covered photos
       try {
@@ -128,9 +190,10 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
 
           // If average brightness is < 12 (pitch dark)
           if (avgLuma < 12) {
-            setModerationError(
-              '⚠️ Ảnh chụp bị tối đen hoàn toàn (ống kính bị che hoặc môi trường thiếu sáng). Vui lòng kiểm tra lại camera để chụp rõ bãi rác.'
-            );
+            setModerationError({
+              message: 'Ảnh chụp bị tối đen hoàn toàn (ống kính bị che hoặc môi trường thiếu sáng). Vui lòng kiểm tra lại camera để chụp rõ bãi rác.',
+              isTechnical: false,
+            });
             return;
           }
         }
@@ -138,14 +201,14 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
         console.warn('Luma check notice:', checkErr);
       }
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
       setImagePreview(dataUrl);
       stopCamera();
       playClickSound();
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -154,13 +217,20 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const result = event.target?.result as string;
-      setImagePreview(result);
-      setModerationError(null);
-    };
-    reader.readAsDataURL(file);
+    setIsProcessingImage(true);
+    setModerationError(null);
+    try {
+      const optimized = await compressImage(file, 1280, 0.82);
+      setImagePreview(optimized);
+      playClickSound();
+    } catch (err: any) {
+      setModerationError({
+        message: 'Lỗi tải ảnh: ' + (err.message || 'Không thể xử lý tệp ảnh'),
+        isTechnical: true,
+      });
+    } finally {
+      setIsProcessingImage(false);
+    }
   };
 
   const handleGetLocation = () => {
@@ -206,20 +276,27 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
     setSuccessMessage(null);
 
     if (!imagePreview) {
-      setModerationError('Vui lòng cung cấp hình ảnh chụp thực tế tình trạng rác thải.');
+      setModerationError({
+        message: 'Vui lòng cung cấp hình ảnh chụp thực tế tình trạng rác thải.',
+        isTechnical: false,
+      });
       return;
     }
 
     if (!location.trim()) {
-      setModerationError('Vui lòng nhập vị trí / khu vực cụ thể xảy ra tình trạng rác.');
+      setModerationError({
+        message: 'Vui lòng nhập vị trí / khu vực cụ thể xảy ra tình trạng rác.',
+        isTechnical: false,
+      });
       return;
     }
 
     const words = description.trim().split(/\s+/).filter(Boolean);
     if (words.length < 15) {
-      setModerationError(
-        `Nội dung mô tả chưa đạt độ dài yêu cầu (${words.length}/15 từ). Quy định yêu cầu bài phản ánh phải có trên 15 từ để tránh bài đăng rác và spam.`
-      );
+      setModerationError({
+        message: `Nội dung mô tả chưa đạt độ dài yêu cầu (${words.length}/15 từ). Quy định yêu cầu bài phản ánh phải có trên 15 từ để tránh bài đăng rác và spam.`,
+        isTechnical: false,
+      });
       return;
     }
 
@@ -227,8 +304,16 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
     playClickSound();
 
     try {
+      // Ensure image is pre-compressed to ~150-300KB to guarantee smooth delivery and no payload errors
+      let optimizedImage = imagePreview;
+      try {
+        optimizedImage = await compressImage(imagePreview, 1280, 0.82);
+      } catch (optErr) {
+        console.warn('Image pre-compression warning:', optErr);
+      }
+
       const result = await submitWasteReport({
-        image: imagePreview,
+        image: optimizedImage,
         location: location.trim(),
         description: description.trim(),
         authorName: authorName.trim() || 'Người dân cộng đồng',
@@ -238,12 +323,17 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
       });
 
       if (!result.approved || !result.success) {
-        // Rejected by moderation
-        setModerationError(
-          result.rejectionReason ||
-            result.error ||
-            'Bài đăng không đạt kiểm duyệt do hình ảnh không có rác hoặc nội dung vi phạm chuẩn mực văn minh.'
-        );
+        if (result.rejectionReason) {
+          setModerationError({
+            message: result.rejectionReason,
+            isTechnical: false,
+          });
+        } else {
+          setModerationError({
+            message: result.error || 'Máy chủ đang bận xử lý hoặc kết nối bị gián đoạn. Vui lòng bấm gửi lại.',
+            isTechnical: true,
+          });
+        }
       } else if (result.report) {
         // Approved and published!
         playPointSound(3);
@@ -254,7 +344,10 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
         }, 1800);
       }
     } catch (err: any) {
-      setModerationError('Lỗi kết nối kiểm duyệt: ' + err.message);
+      setModerationError({
+        message: 'Lỗi mạng hoặc máy chủ không phản hồi: ' + (err.message || 'Vui lòng thử lại sau giây lát'),
+        isTechnical: true,
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -380,6 +473,12 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
                   </button>
                 </div>
               </div>
+            ) : isProcessingImage ? (
+              <div className="p-8 rounded-2xl border-2 border-dashed border-emerald-500/40 bg-slate-950/60 flex flex-col items-center justify-center gap-2.5 text-center">
+                <Loader2 className="w-7 h-7 text-emerald-400 animate-spin" />
+                <span className="font-bold text-xs text-emerald-300">Đang tối ưu & nén dung lượng hình ảnh...</span>
+                <span className="text-[11px] text-slate-400">Tự động chuẩn hóa kích thước để gửi bài siêu nhanh và không bị nghẽn mạng</span>
+              </div>
             ) : imagePreview ? (
               <div className="relative rounded-2xl overflow-hidden border-2 border-emerald-500/50 bg-slate-950 group">
                 <img
@@ -399,9 +498,9 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
                   </button>
                 </div>
                 <div className="p-2.5 bg-slate-950/90 border-t border-slate-800 flex items-center justify-between text-xs text-slate-300">
-                  <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    Đã tải ảnh lên thành công
+                  <span className="flex items-center gap-1.5 text-emerald-400 font-semibold text-[11px] sm:text-xs">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    Đã tối ưu & sẵn sàng kiểm duyệt
                   </span>
                   <button
                     type="button"
@@ -582,18 +681,33 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
 
           {/* Rejection / Failure Banner */}
           {moderationError && (
-            <div className="p-4 rounded-2xl bg-rose-950/70 border-2 border-rose-500 text-rose-200 text-xs space-y-2 animate-shake shadow-lg shadow-rose-950/50">
-              <div className="flex items-center gap-2 font-black text-rose-300 text-sm">
-                <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0" />
-                KHÔNG ĐẠT KIỂM DUYỆT - BÀI VIẾT BỊ TỪ CHỐI
+            moderationError.isTechnical ? (
+              <div className="p-4 rounded-2xl bg-amber-950/80 border-2 border-amber-500 text-amber-200 text-xs space-y-2 animate-shake shadow-lg shadow-amber-950/50">
+                <div className="flex items-center gap-2 font-black text-amber-300 text-sm">
+                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+                  LỖI KẾT NỐI MÁY CHỦ HOẶC MẠNG PHẢN HỒI CHẬM
+                </div>
+                <div className="bg-slate-950/70 p-3 rounded-xl border border-amber-500/30 text-slate-200 font-medium leading-relaxed">
+                  {moderationError.message}
+                </div>
+                <p className="text-[11px] text-amber-300/90 flex items-center gap-1.5">
+                  <span>💡 <strong>Gợi ý:</strong> Toàn bộ hình ảnh và nội dung mô tả của bạn vẫn được lưu giữ nguyên vẹn. Vui lòng kiểm tra kết nối mạng và bấm <strong>"Gửi bài phản ánh"</strong> để thử lại.</span>
+                </p>
               </div>
-              <div className="bg-slate-950/60 p-3 rounded-xl border border-rose-500/30 text-slate-200 font-medium leading-relaxed">
-                {moderationError}
+            ) : (
+              <div className="p-4 rounded-2xl bg-rose-950/70 border-2 border-rose-500 text-rose-200 text-xs space-y-2 animate-shake shadow-lg shadow-rose-950/50">
+                <div className="flex items-center gap-2 font-black text-rose-300 text-sm">
+                  <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0" />
+                  KHÔNG ĐẠT KIỂM DUYỆT - BÀI VIẾT BỊ TỪ CHỐI
+                </div>
+                <div className="bg-slate-950/60 p-3 rounded-xl border border-rose-500/30 text-slate-200 font-medium leading-relaxed">
+                  {moderationError.message}
+                </div>
+                <p className="text-[11px] text-rose-300/90">
+                  💡 <strong>Gợi ý khắc phục:</strong> Vui lòng đổi sang ảnh chụp bãi rác thực tế (không dùng ảnh AI) hoặc kiểm tra nội dung mô tả chi tiết trên 15 từ, lịch sự, văn minh rồi bấm gửi lại.
+                </p>
               </div>
-              <p className="text-[11px] text-rose-300/90">
-                💡 <strong>Gợi ý khắc phục:</strong> Vui lòng đổi sang ảnh chụp bãi rác thực tế hoặc sửa lại nội dung văn bản cho lịch sự, văn minh rồi bấm gửi lại.
-              </p>
-            </div>
+            )
           )}
 
           {/* Success Banner */}
