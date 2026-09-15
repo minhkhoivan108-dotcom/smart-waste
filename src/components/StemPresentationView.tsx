@@ -17,8 +17,6 @@ interface StemPresentationViewProps {
   onDuplicateDetected?: (alert: any) => void;
   onOpenGuide?: () => void;
   onOpenSqlGuide?: () => void;
-  onOpenGoogleSheets?: () => void;
-  isGoogleSheetsActive?: boolean;
 }
 
 export const StemPresentationView: React.FC<StemPresentationViewProps> = ({
@@ -34,8 +32,6 @@ export const StemPresentationView: React.FC<StemPresentationViewProps> = ({
   onDuplicateDetected,
   onOpenGuide,
   onOpenSqlGuide,
-  onOpenGoogleSheets,
-  isGoogleSheetsActive = false,
 }) => {
   const totalScans = history.length;
   const organicCount = history.filter((x) => x.category === 'organic').length;
@@ -115,8 +111,6 @@ export const StemPresentationView: React.FC<StemPresentationViewProps> = ({
             onRefreshOnline={onResetLeaderboard}
             onAddNewUser={onAddNewUser}
             onOpenSqlGuide={onOpenSqlGuide}
-            onOpenGoogleSheets={onOpenGoogleSheets}
-            isGoogleSheetsActive={isGoogleSheetsActive}
           />
         </div>
       </div>

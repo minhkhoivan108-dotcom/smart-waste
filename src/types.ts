@@ -101,3 +101,50 @@ export interface DemoWasteItem {
   emoji: string;
   imageUrl?: string;
 }
+
+export type ReportSeverity = 'low' | 'medium' | 'high' | 'urgent';
+export type ReportProcessingStatus = 'reported' | 'investigating' | 'resolved';
+
+export interface WasteReportModerationDetails {
+  approved: boolean;
+  imageCheckPassed: boolean;
+  textCheckPassed: boolean;
+  isAIGenerated?: boolean;
+  aiAuthenticityPassed?: boolean;
+  rejectionReason?: string;
+  wasteTypeDetected?: string;
+  severityLevel?: ReportSeverity;
+  summary?: string;
+  checkedAt: number;
+  moderatedBy: string;
+}
+
+export interface WasteReport {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar: string;
+  authorOrg?: string;
+  location: string;
+  description: string;
+  imageUrl: string;
+  wasteTypeDetected: string;
+  severityLevel: ReportSeverity;
+  moderationStatus: 'approved' | 'rejected';
+  moderationDetails: WasteReportModerationDetails;
+  status: ReportProcessingStatus;
+  createdAt: number;
+  upvotes: number;
+  resolutionNote?: string;
+}
+
+export interface WasteReportSubmissionPayload {
+  authorId?: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorOrg?: string;
+  location: string;
+  description: string;
+  image: string; // base64 or URL
+}
+

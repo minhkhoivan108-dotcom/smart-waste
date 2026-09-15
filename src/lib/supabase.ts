@@ -339,6 +339,7 @@ export async function recordClassificationOnline(params: {
       p_points: params.points,
       p_source: params.source,
       p_confidence: params.confidence || 0.95,
+      p_user_id: params.userId || params.userName,
     });
 
     if (error) {

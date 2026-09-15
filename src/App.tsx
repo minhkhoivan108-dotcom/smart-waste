@@ -29,7 +29,7 @@ import { DuplicateWarningToast } from './components/DuplicateWarningToast';
 import { WasteGuideModal } from './components/WasteGuideModal';
 import { StemPresentationView } from './components/StemPresentationView';
 import { SupabaseSqlModal } from './components/SupabaseSqlModal';
-import { GoogleSheetsModal } from './components/GoogleSheetsModal';
+import { WasteReportsView } from './components/WasteReportsView';
 import {
   isSupabaseConfigured,
   getSupabase,
@@ -39,12 +39,12 @@ import {
   recordClassificationOnline,
 } from './lib/supabase';
 import {
-  isGoogleSheetsConfigured,
-  fetchGoogleSheetsData,
-  recordWasteToGoogleSheets,
-  registerPlayerToGoogleSheets,
-} from './lib/googleSheets';
-import { Database, Code, ShieldCheck, Sparkles, FileSpreadsheet, RefreshCw } from 'lucide-react';
+  recordPointsOnServer,
+  fetchServerLeaderboard,
+  registerPlayerOnServer,
+  listenToLeaderboardStream,
+} from './lib/serverSync';
+import { Database, Code, ShieldCheck, Sparkles, RefreshCw } from 'lucide-react';
 
 export default function App() {
   // User Profile
@@ -69,175 +69,237 @@ export default function App() {
   // Modals & UI States
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [isSqlModalOpen, setIsSqlModalOpen] = useState(false);
-  const [isGoogleSheetsModalOpen, setIsGoogleSheetsModalOpen] = useState(false);
-  const [isGoogleSheetsActive, setIsGoogleSheetsActive] = useState<boolean>(() => isGoogleSheetsConfigured());
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMuted, setIsMuted] = useState(getIsMuted);
+  const [activeTab, setActiveTab] = useState<'sorting' | 'reports'>('sorting');
 
   const isSupabaseLive = isSupabaseConfigured();
   const currentUserRef = useRef<UserProfile | null>(currentUser);
   currentUserRef.current = currentUser;
 
-  // Synchronization with Google Sheets (Primary Multi-device Online Database)
-  const syncWithGoogleSheets = useCallback(async (showLoading = false) => {
-    if (!isGoogleSheetsConfigured()) return;
-    if (showLoading) setIsLoadingLeaderboard(true);
-    try {
-      const res = await fetchGoogleSheetsData();
-      if (res.success && res.players) {
-        setIsGoogleSheetsActive(true);
-        // Sort descending by totalPoints, then correctCount
-        const sorted = [...res.players].sort((a, b) => {
-          if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-          return (b.correctCount || 0) - (a.correctCount || 0);
-        });
-
-        const mapped = sorted.map((p) => ({
-          ...p,
-          isCurrentUser: Boolean(
-            currentUserRef.current &&
-              (p.id === currentUserRef.current.id ||
-                p.name.trim().toLowerCase() === currentUserRef.current.name.trim().toLowerCase())
-          ),
-        }));
-
-        setLeaderboardEntries(mapped);
-
-        // Synchronize current user's points if changed on Google Sheets
-        if (currentUserRef.current) {
-          const matched = sorted.find(
-            (p) =>
-              p.id === currentUserRef.current?.id ||
-              p.name.trim().toLowerCase() === currentUserRef.current?.name.trim().toLowerCase()
-          );
-          if (matched) {
-            setCurrentUser((prev) => {
-              if (!prev) return prev;
-              if (prev.totalPoints !== matched.totalPoints || prev.correctCount !== matched.correctCount) {
-                const updated = {
-                  ...prev,
-                  totalPoints: matched.totalPoints,
-                  correctCount: matched.correctCount || prev.correctCount,
-                };
-                saveUserProfile(updated);
-                return updated;
-              }
-              return prev;
-            });
-          }
-        }
-
-        if (res.history && res.history.length > 0) {
-          setHistory(res.history);
-          saveHistory(res.history);
-        }
-      }
-    } catch (err) {
-      console.error('Google Sheets sync notice:', err);
-    } finally {
-      if (showLoading) setIsLoadingLeaderboard(false);
-    }
-  }, []);
-
-  // Refresh online leaderboard from Supabase
-  const refreshLeaderboardOnline = useCallback(async () => {
-    // If Google Sheets is configured, prioritize Google Sheets
-    if (isGoogleSheetsConfigured()) {
-      await syncWithGoogleSheets(true);
-      return;
-    }
-
+  // Refresh online leaderboard directly from Supabase (and Central Realtime Server)
+  const refreshLeaderboardOnline = useCallback(async (userOverride?: UserProfile | null) => {
     setIsLoadingLeaderboard(true);
     try {
+      const activeUser = userOverride !== undefined ? userOverride : currentUserRef.current;
+
+      // 1. Fetch from Supabase as primary online database
+      let supabaseEntries: LeaderboardEntry[] = [];
       if (isSupabaseConfigured()) {
-        const res = await fetchOnlineLeaderboard(currentUserRef.current?.id);
+        const res = await fetchOnlineLeaderboard(activeUser?.id);
         if (res.entries && res.entries.length > 0) {
-          let list = [...res.entries];
-          if (currentUserRef.current) {
-            const cur = currentUserRef.current;
-            const idx = list.findIndex(
-              (e) => e.id === cur.id || e.name.trim().toLowerCase() === cur.name.trim().toLowerCase()
-            );
-            if (idx >= 0) {
-              list[idx].isCurrentUser = true;
-              if (cur.totalPoints > list[idx].totalPoints) {
-                list[idx].totalPoints = cur.totalPoints;
-                list[idx].correctCount = cur.correctCount;
-              }
-            } else {
-              list.push({
-                id: cur.id,
-                name: cur.name,
-                email: cur.email,
-                organization: cur.organization || 'Khối Sáng Tạo STEM',
-                totalPoints: cur.totalPoints,
-                correctCount: cur.correctCount || 0,
-                avatar: cur.avatar || '🌱',
-                levelTitle: getLevelTitle(cur.totalPoints),
-                lastActive: Date.now(),
-                isCurrentUser: true,
-              });
-            }
-            list.sort((a, b) => {
-              if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-              return (b.correctCount || 0) - (a.correctCount || 0);
-            });
-          }
-          setLeaderboardEntries(list);
-          saveLeaderboard(list);
-          return;
+          supabaseEntries = res.entries;
         }
       }
 
-      // If Supabase returned empty or error, fallback to local storage
-      const local = loadLeaderboard(currentUserRef.current);
+      // 2. Fetch from Central Multi-Device Server
+      const serverEntries = await fetchServerLeaderboard();
+
+      // Merge players from both sources
+      const playerMap = new Map<string, LeaderboardEntry>();
+
+      // Put Supabase entries
+      for (const entry of supabaseEntries) {
+        playerMap.set(entry.id, entry);
+      }
+
+      // Overwrite/merge with server entries
+      for (const entry of serverEntries) {
+        const existingById = playerMap.get(entry.id);
+        const existingByName = Array.from(playerMap.values()).find(
+          (p) => p.name.trim().toLowerCase() === entry.name.trim().toLowerCase()
+        );
+        const existing = existingById || existingByName;
+
+        if (existing) {
+          existing.totalPoints = Math.max(existing.totalPoints, entry.totalPoints);
+          existing.correctCount = Math.max(existing.correctCount || 0, entry.correctCount || 0);
+          existing.organization = entry.organization || existing.organization;
+          existing.avatar = entry.avatar || existing.avatar;
+          playerMap.set(existing.id, existing);
+        } else {
+          playerMap.set(entry.id, entry);
+        }
+      }
+
+      let list = Array.from(playerMap.values());
+
+      // If activeUser is logged in, ensure activeUser is present in the list
+      if (activeUser) {
+        const idx = list.findIndex(
+          (e) => e.id === activeUser.id || e.name.trim().toLowerCase() === activeUser.name.trim().toLowerCase()
+        );
+
+        if (idx >= 0) {
+          list[idx].isCurrentUser = true;
+          // Sync up if local has more points
+          if (activeUser.totalPoints > list[idx].totalPoints) {
+            list[idx].totalPoints = activeUser.totalPoints;
+            list[idx].correctCount = activeUser.correctCount;
+            registerPlayerOnServer(activeUser);
+          } else if (list[idx].totalPoints > activeUser.totalPoints) {
+            // Server has more points
+            const updated = {
+              ...activeUser,
+              totalPoints: list[idx].totalPoints,
+              correctCount: list[idx].correctCount,
+            };
+            currentUserRef.current = updated;
+            setCurrentUser(updated);
+            saveUserProfile(updated);
+          }
+        } else {
+          list.push({
+            id: activeUser.id,
+            name: activeUser.name,
+            email: activeUser.email,
+            organization: activeUser.organization || 'Khối Sáng Tạo STEM',
+            totalPoints: activeUser.totalPoints || 0,
+            correctCount: activeUser.correctCount || 0,
+            avatar: activeUser.avatar || '🌱',
+            levelTitle: getLevelTitle(activeUser.totalPoints || 0),
+            lastActive: Date.now(),
+            isCurrentUser: true,
+          });
+          registerPlayerOnServer(activeUser);
+        }
+      }
+
+      // Explicitly mark isCurrentUser correctly for all entries
+      list = list.map((e) => ({
+        ...e,
+        isCurrentUser: Boolean(
+          activeUser &&
+            (e.id === activeUser.id || e.name.trim().toLowerCase() === activeUser.name.trim().toLowerCase())
+        ),
+      }));
+
+      // ALWAYS sort by totalPoints DESC, correctCount DESC, then lastActive DESC
+      list.sort((a, b) => {
+        if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+        if ((b.correctCount || 0) !== (a.correctCount || 0)) return (b.correctCount || 0) - (a.correctCount || 0);
+        return (b.lastActive || 0) - (a.lastActive || 0);
+      });
+
+      if (list.length > 0) {
+        setLeaderboardEntries(list);
+        saveLeaderboard(list);
+        return;
+      }
+
+      // If online returned empty, fallback to local storage
+      const local = loadLeaderboard(activeUser);
       setLeaderboardEntries(local);
     } catch (e) {
-      console.error('Failed to fetch online leaderboard', e);
+      console.warn('Leaderboard fetch notice:', e);
       const local = loadLeaderboard(currentUserRef.current);
       setLeaderboardEntries(local);
     } finally {
       setIsLoadingLeaderboard(false);
     }
-  }, [syncWithGoogleSheets]);
+  }, []);
 
-  // Periodic polling for real-time Google Sheets updates across multiple devices
+  // Periodic polling for real-time updates across multiple devices
   useEffect(() => {
     // Initial sync
-    if (isGoogleSheetsConfigured()) {
-      syncWithGoogleSheets(false);
-    }
+    refreshLeaderboardOnline();
 
-    // Auto-poll Google Sheets every 6 seconds so all devices see live changes
+    // Auto-poll every 3 seconds so all devices see live changes even if SSE disconnected
     const pollInterval = setInterval(() => {
-      if (isGoogleSheetsConfigured()) {
-        syncWithGoogleSheets(false);
-      }
-    }, 6000);
+      refreshLeaderboardOnline();
+    }, 3000);
 
     return () => clearInterval(pollInterval);
-  }, [syncWithGoogleSheets]);
+  }, [refreshLeaderboardOnline]);
 
-  // Initialize data and Supabase Auth session on mount
+  // Initialize data, Real-time multi-device SSE stream, and Supabase Auth session on mount
   useEffect(() => {
     const loadedHistory = loadHistory();
     setHistory(loadedHistory);
 
+    const cur = currentUserRef.current;
+    if (cur) {
+      registerPlayerOnServer(cur);
+    }
+
+    // 1. Subscribe to Central Server-Sent Events (SSE) stream for instant updates across 3 devices
+    const unsubscribeSSE = listenToLeaderboardStream((serverBoard) => {
+      if (Array.isArray(serverBoard) && serverBoard.length > 0) {
+        const activeUser = currentUserRef.current;
+        let list = serverBoard.map((e) => ({
+          ...e,
+          isCurrentUser: Boolean(
+            activeUser &&
+              (e.id === activeUser.id || e.name.trim().toLowerCase() === activeUser.name.trim().toLowerCase())
+          ),
+        }));
+
+        if (activeUser) {
+          const exists = list.some(
+            (e) => e.id === activeUser.id || e.name.trim().toLowerCase() === activeUser.name.trim().toLowerCase()
+          );
+          if (!exists) {
+            list.push({
+              id: activeUser.id,
+              name: activeUser.name,
+              email: activeUser.email,
+              organization: activeUser.organization || 'Khối Sáng Tạo STEM',
+              totalPoints: activeUser.totalPoints || 0,
+              correctCount: activeUser.correctCount || 0,
+              avatar: activeUser.avatar || '🌱',
+              levelTitle: getLevelTitle(activeUser.totalPoints || 0),
+              lastActive: Date.now(),
+              isCurrentUser: true,
+            });
+          }
+        }
+
+        list.sort((a, b) => {
+          if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+          if ((b.correctCount || 0) !== (a.correctCount || 0)) return (b.correctCount || 0) - (a.correctCount || 0);
+          return (b.lastActive || 0) - (a.lastActive || 0);
+        });
+
+        setLeaderboardEntries(list);
+        saveLeaderboard(list);
+
+        if (activeUser) {
+          const myEntry = list.find((e) => e.isCurrentUser);
+          if (myEntry && myEntry.totalPoints > activeUser.totalPoints) {
+            setCurrentUser((prev) => {
+              if (!prev) return prev;
+              const up = {
+                ...prev,
+                totalPoints: myEntry.totalPoints,
+                correctCount: myEntry.correctCount,
+              };
+              saveUserProfile(up);
+              return up;
+            });
+          }
+        }
+      }
+    });
+
     const client = getSupabase();
+    let supabaseSub: any = null;
+    let supabaseChannel: any = null;
+
     if (client) {
-      // 1. Check existing Supabase auth session
+      // Restore Supabase auth session if available
       client.auth.getSession().then(({ data: { session } }) => {
         if (session?.user) {
           fetchPlayerProfile(session.user.id).then((profile) => {
             if (profile) {
               setCurrentUser(profile);
               saveUserProfile(profile);
+              registerPlayerOnServer(profile);
             }
           });
         }
       });
 
-      // 2. Listen to Supabase auth changes
+      // Listen to Supabase auth changes
       const {
         data: { subscription },
       } = client.auth.onAuthStateChange(async (_event, session) => {
@@ -246,31 +308,33 @@ export default function App() {
           if (profile) {
             setCurrentUser(profile);
             saveUserProfile(profile);
+            registerPlayerOnServer(profile);
           }
         }
       });
+      supabaseSub = subscription;
 
-      // 3. Subscribe to Realtime Postgres changes on 'public.players'
-      const channel = subscribeToLeaderboardChanges(() => {
+      // Subscribe to Realtime Postgres changes on 'public.players'
+      supabaseChannel = subscribeToLeaderboardChanges(() => {
         refreshLeaderboardOnline();
       });
-
-      // 4. Initial fetch from online database
-      refreshLeaderboardOnline();
-
-      return () => {
-        subscription.unsubscribe();
-        if (channel) {
-          client.removeChannel(channel);
-        }
-      };
     } else {
-      // Offline fallback: load cached leaderboard without mock items
       const savedUser = loadUserProfile();
       if (!savedUser) {
         setIsLoginModalOpen(true);
       }
     }
+
+    // Initial fetch
+    refreshLeaderboardOnline();
+
+    return () => {
+      unsubscribeSSE();
+      if (supabaseSub) supabaseSub.unsubscribe();
+      if (supabaseChannel && client) {
+        client.removeChannel(supabaseChannel);
+      }
+    };
   }, [refreshLeaderboardOnline]);
 
   // Handle classification result from WebcamScanner
@@ -393,29 +457,35 @@ export default function App() {
         return list;
       });
 
-      // 3. BACKGROUND ONLINE SYNC (Google Sheets & Supabase)
-      // Google Sheets sync
-      if (isGoogleSheetsConfigured()) {
-        try {
-          const sheetRes = await recordWasteToGoogleSheets({
-            playerName: updatedUser.name,
-            organization: updatedUser.organization || 'Khối Sáng Tạo STEM',
-            avatar: updatedUser.avatar || '🌱',
-            itemName: result.itemName,
-            category: result.category,
-            confidence: result.confidence,
-          });
-
-          if (sheetRes.success) {
-            setIsGoogleSheetsActive(true);
-            syncWithGoogleSheets(false);
+      // 3. CENTRAL MULTI-DEVICE RECORDING (Instantly syncs and broadcasts to all 3 devices via SSE)
+      recordPointsOnServer({
+        userId: updatedUser.id,
+        userName: updatedUser.name,
+        email: updatedUser.email,
+        organization: updatedUser.organization,
+        avatar: updatedUser.avatar,
+        itemName: result.itemName,
+        category: result.category,
+        points: pointsToAward,
+        confidence: result.confidence,
+        source: result.source || 'webcam',
+      })
+        .then((serverRes) => {
+          if (serverRes.success && serverRes.leaderboard) {
+            const list = serverRes.leaderboard.map((e) => ({
+              ...e,
+              isCurrentUser:
+                e.id === updatedUser.id || e.name.trim().toLowerCase() === updatedUser.name.trim().toLowerCase(),
+            }));
+            setLeaderboardEntries(list);
+            saveLeaderboard(list);
           }
-        } catch (e) {
-          console.warn('Google Sheets background sync notice:', e);
-        }
-      }
+        })
+        .catch((e) => {
+          console.warn('Central server sync notice:', e);
+        });
 
-      // Supabase sync
+      // 4. BACKGROUND ONLINE SYNC (Supabase Realtime Database)
       if (isSupabaseLive) {
         try {
           const onlineRes = await recordClassificationOnline({
@@ -445,23 +515,26 @@ export default function App() {
         }
       }
     },
-    [currentUser, isSupabaseLive, refreshLeaderboardOnline, syncWithGoogleSheets]
+    [currentUser, isSupabaseLive, refreshLeaderboardOnline]
   );
 
   // Handle user login / switch
-  const handleLogin = (profile: UserProfile) => {
+  const handleLogin = async (profile: UserProfile) => {
+    currentUserRef.current = profile;
     setCurrentUser(profile);
     saveUserProfile(profile);
     setIsLoginModalOpen(false);
     setLeaderboardEntries(loadLeaderboard(profile));
-    refreshLeaderboardOnline();
+    await registerPlayerOnServer(profile);
+    await refreshLeaderboardOnline(profile);
   };
 
   // Handle sign out
   const handleLogout = () => {
+    currentUserRef.current = null;
     clearUserProfile();
     setCurrentUser(null);
-    refreshLeaderboardOnline();
+    refreshLeaderboardOnline(null);
   };
 
   // Clear history
@@ -500,9 +573,9 @@ export default function App() {
         onToggleFullscreen={handleToggleFullscreen}
         onOpenGuide={() => setIsGuideOpen(true)}
         onSwitchUser={() => setIsLoginModalOpen(true)}
-        onOpenGoogleSheets={() => setIsGoogleSheetsModalOpen(true)}
-        isGoogleSheetsActive={isGoogleSheetsActive || isGoogleSheetsConfigured()}
         recentPointChange={recentPointChange}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
       />
 
       {/* Floating Points Notification */}
@@ -530,17 +603,6 @@ export default function App() {
         onLogin={handleLogin}
         onLogout={handleLogout}
         onOpenSqlGuide={() => setIsSqlModalOpen(true)}
-        onOpenGoogleSheets={() => setIsGoogleSheetsModalOpen(true)}
-      />
-
-      {/* Google Sheets Setup & Live Database Modal */}
-      <GoogleSheetsModal
-        isOpen={isGoogleSheetsModalOpen}
-        onClose={() => setIsGoogleSheetsModalOpen(false)}
-        onConnected={() => {
-          setIsGoogleSheetsActive(true);
-          syncWithGoogleSheets(true);
-        }}
       />
 
       {/* STEM Waste Guide Modal */}
@@ -570,185 +632,105 @@ export default function App() {
           onDuplicateDetected={handleDuplicateDetected}
           onOpenGuide={() => setIsGuideOpen(true)}
           onOpenSqlGuide={() => setIsSqlModalOpen(true)}
-          onOpenGoogleSheets={() => setIsGoogleSheetsModalOpen(true)}
-          isGoogleSheetsActive={isGoogleSheetsActive || isGoogleSheetsConfigured()}
         />
       )}
 
       {/* Main Content Dashboard */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
-        {/* Database Online Sync Status Banner */}
-        <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-slate-900/95 border border-slate-800 shadow-xl text-xs flex-wrap">
-          <div className="flex items-center gap-3">
-            <span
-              className={`flex h-3 w-3 relative ${
-                isGoogleSheetsActive || isGoogleSheetsConfigured()
-                  ? 'text-emerald-400'
-                  : isSupabaseLive
-                  ? 'text-cyan-400'
-                  : 'text-amber-400'
-              }`}
-            >
-              <span
-                className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                  isGoogleSheetsActive || isGoogleSheetsConfigured()
-                    ? 'bg-emerald-400'
-                    : isSupabaseLive
-                    ? 'bg-cyan-400'
-                    : 'bg-amber-400'
-                }`}
-              />
-              <span
-                className={`relative inline-flex rounded-full h-3 w-3 ${
-                  isGoogleSheetsActive || isGoogleSheetsConfigured()
-                    ? 'bg-emerald-500'
-                    : isSupabaseLive
-                    ? 'bg-cyan-500'
-                    : 'bg-amber-500'
-                }`}
-              />
-            </span>
-            <div>
-              <div className="font-black text-slate-100 flex items-center gap-2">
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span>
-                  {isGoogleSheetsActive || isGoogleSheetsConfigured()
-                    ? 'Google Sheets Online Database: Đang lưu điểm & Lịch sử thật'
-                    : 'Google Sheets: Chưa kết nối URL Web App Apps Script'}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                {isGoogleSheetsActive || isGoogleSheetsConfigured()
-                  ? 'Dữ liệu được cập nhật tự động giữa nhiều thiết bị, điện thoại và máy tính.'
-                  : 'Kết nối Google Sheets để nhiều người chơi cùng chung bảng xếp hạng online.'}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setIsGoogleSheetsModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-950/90 hover:bg-emerald-900 border-2 border-emerald-500/60 text-emerald-300 hover:text-white font-black transition-all shadow-md shadow-emerald-950/40 hover:scale-105 active:scale-95 cursor-pointer"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Cấu Hình Google Sheets</span>
-            </button>
-
-            {isGoogleSheetsConfigured() && (
-              <button
-                onClick={() => syncWithGoogleSheets(true)}
-                title="Đồng bộ ngay từ Google Sheets"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white font-bold transition-all cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLeaderboard ? 'animate-spin text-emerald-400' : ''}`} />
-                <span className="hidden sm:inline">Đồng bộ</span>
-              </button>
-            )}
-
-            <button
-              onClick={() => setIsSqlModalOpen(true)}
-              title="Xem cấu hình SQL Supabase dự phòng"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 hover:text-slate-200 font-medium transition-all cursor-pointer"
-            >
-              <Code className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Mã SQL</span>
-            </button>
-
-            <button
-              onClick={() => setIsLoginModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-200 hover:text-white font-bold transition-all cursor-pointer"
-            >
-              <Database className="w-3.5 h-3.5 text-emerald-400" />
-              <span>{currentUser ? currentUser.name : 'Đăng Ký Thí Sinh'}</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Project STEM Banner */}
-        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-emerald-950/60 via-slate-900 to-cyan-950/40 border border-slate-800 p-5 sm:p-6 shadow-2xl">
-          <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-          <div className="relative z-10 flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-bold mb-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                DỰ ÁN CÔNG NGHỆ MÔI TRƯỜNG &bull; CUỘC THI STEM 2026
-              </div>
-              <h1 className="text-xl sm:text-2xl lg:text-3xl font-black text-slate-100 tracking-tight">
-                Hệ Thống Phân Loại Rác Thông Minh & Tích Điểm Thưởng
-              </h1>
-              <p className="text-xs sm:text-sm text-slate-300 max-w-2xl mt-1 leading-relaxed">
-                Ứng dụng AI nhận diện rác trực tiếp qua Webcam, lưu điểm trực tiếp vào <strong className="text-emerald-300">Google Sheets Online</strong>. Quy tắc điểm STEM: <span className="text-emerald-400 font-bold">Hữu cơ +1đ</span>, <span className="text-amber-400 font-bold">Tái chế +2đ</span>, <span className="text-orange-400 font-bold">Vô cơ +3đ</span>. Bảng xếp hạng tự động cập nhật từ cao xuống thấp.
-              </p>
-            </div>
-
-            {/* Current Active Contestant Quick Stats Pill */}
-            {currentUser && (
-              <div className="flex items-center gap-3 bg-slate-950/80 border border-slate-700/80 rounded-2xl p-3 shadow-lg">
-                <span className="text-3xl select-none">{currentUser.avatar}</span>
-                <div className="text-left">
-                  <div className="text-xs text-slate-400">Điểm của bạn:</div>
-                  <div className="text-2xl font-black font-mono text-amber-400 leading-none">
-                    {currentUser.totalPoints} <span className="text-xs text-slate-300 font-normal">điểm</span>
+        {activeTab === 'reports' ? (
+          <WasteReportsView
+            currentUser={currentUser}
+            onOpenLogin={() => setIsLoginModalOpen(true)}
+          />
+        ) : (
+          <>
+            {/* Project STEM Banner */}
+            <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-emerald-950/60 via-slate-900 to-cyan-950/40 border border-slate-800 p-5 sm:p-6 shadow-2xl">
+              <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+              <div className="relative z-10 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-bold mb-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    DỰ ÁN CÔNG NGHỆ MÔI TRƯỜNG &bull; CUỘC THI STEM 2026
                   </div>
-                  <div className="text-[10px] text-emerald-400 mt-1 font-semibold">
-                    {currentUser.name} ({currentUser.correctCount || 0} lần đúng)
-                  </div>
+                  <h1 className="text-xl sm:text-2xl lg:text-3xl font-black text-slate-100 tracking-tight">
+                    Hệ Thống Phân Loại Rác Thông Minh & Tích Điểm Thưởng
+                  </h1>
+                  <p className="text-xs sm:text-sm text-slate-300 max-w-2xl mt-1 leading-relaxed">
+                    Ứng dụng AI nhận diện rác trực tiếp qua Webcam, lưu trữ và đồng bộ thời gian thực qua <strong className="text-emerald-300">Cơ sở dữ liệu Supabase</strong>. Quy tắc điểm STEM: <span className="text-emerald-400 font-bold">Hữu cơ +1đ</span>, <span className="text-amber-400 font-bold">Tái chế +2đ</span>, <span className="text-orange-400 font-bold">Vô cơ +3đ</span>. Bảng xếp hạng tự động cập nhật từ cao xuống thấp.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('reports')}
+                    className="mt-3 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-teal-950/80 hover:bg-teal-900/90 border border-teal-500/40 text-teal-300 text-xs font-bold transition-all shadow-sm active:scale-95"
+                  >
+                    <span>📢 Kênh Phản Ánh Tình Trạng Rác Thải (Mới) &rarr;</span>
+                  </button>
                 </div>
+
+                {/* Current Active Contestant Quick Stats Pill */}
+                {currentUser && (
+                  <div className="flex items-center gap-3 bg-slate-950/80 border border-slate-700/80 rounded-2xl p-3 shadow-lg">
+                    <span className="text-3xl select-none">{currentUser.avatar}</span>
+                    <div className="text-left">
+                      <div className="text-xs text-slate-400">Điểm của bạn:</div>
+                      <div className="text-2xl font-black font-mono text-amber-400 leading-none">
+                        {currentUser.totalPoints} <span className="text-xs text-slate-300 font-normal">điểm</span>
+                      </div>
+                      <div className="text-[10px] text-emerald-400 mt-1 font-semibold">
+                        {currentUser.name} ({currentUser.correctCount || 0} lần đúng)
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </div>
+            </div>
 
-        {/* Primary Row: Webcam Scanner on Left, Leaderboard on Right */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left: Webcam AI Scanner (7 Columns) */}
-          <div className="lg:col-span-7">
-            <WebcamScanner
-              onClassified={handleClassified}
-              isProcessing={isProcessing}
-              setIsProcessing={setIsProcessing}
-              onDuplicateDetected={handleDuplicateDetected}
-              onOpenGuide={() => setIsGuideOpen(true)}
+            {/* Primary Row: Webcam Scanner on Left, Leaderboard on Right */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              {/* Left: Webcam AI Scanner (7 Columns) */}
+              <div className="lg:col-span-7">
+                <WebcamScanner
+                  onClassified={handleClassified}
+                  isProcessing={isProcessing}
+                  setIsProcessing={setIsProcessing}
+                  onDuplicateDetected={handleDuplicateDetected}
+                  onOpenGuide={() => setIsGuideOpen(true)}
+                />
+              </div>
+
+              {/* Right: Leaderboard (5 Columns) */}
+              <div className="lg:col-span-5 h-full">
+                <Leaderboard
+                  entries={leaderboardEntries}
+                  currentUser={currentUser}
+                  onRefreshOnline={refreshLeaderboardOnline}
+                  onAddNewUser={() => setIsLoginModalOpen(true)}
+                  onOpenSqlGuide={() => setIsSqlModalOpen(true)}
+                  isLoading={isLoadingLeaderboard}
+                />
+              </div>
+            </div>
+
+            {/* Secondary Row: Classification History & Impact Metrics */}
+            <ClassificationHistory
+              history={history}
+              onClearHistory={handleClearHistory}
             />
-          </div>
-
-          {/* Right: Leaderboard (5 Columns) */}
-          <div className="lg:col-span-5 h-full">
-            <Leaderboard
-              entries={leaderboardEntries}
-              currentUser={currentUser}
-              onRefreshOnline={refreshLeaderboardOnline}
-              onAddNewUser={() => setIsLoginModalOpen(true)}
-              onOpenSqlGuide={() => setIsSqlModalOpen(true)}
-              onOpenGoogleSheets={() => setIsGoogleSheetsModalOpen(true)}
-              isGoogleSheetsActive={isGoogleSheetsActive || isGoogleSheetsConfigured()}
-              isLoading={isLoadingLeaderboard}
-            />
-          </div>
-        </div>
-
-        {/* Secondary Row: Classification History & Impact Metrics */}
-        <ClassificationHistory
-          history={history}
-          onClearHistory={handleClearHistory}
-        />
+          </>
+        )}
       </main>
 
+
       {/* STEM Footer */}
-      <footer className="w-full border-t border-slate-800/80 bg-slate-950 py-6 px-4 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <strong className="text-slate-400">EcoSort AI STEM</strong> &bull; Supabase Database & Authentication Online
+      <footer id="stem-footer" className="w-full border-t border-slate-800 bg-slate-950 py-5 px-4 text-center">
+        <div className="max-w-3xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-400">
+          <div className="flex items-center gap-2 text-slate-300 font-medium">
+            <span>🌱</span>
+            <span>Chúng em xin chân thành cảm ơn <strong className="text-emerald-400 font-semibold">Ban Giám Khảo</strong> đã dành thời gian theo dõi và đánh giá dự án!</span>
           </div>
-          <div className="flex items-center gap-4 text-slate-400">
-            <span>Rác Hữu cơ: +1đ</span>
-            <span>&bull;</span>
-            <span>Rác Tái chế: +2đ</span>
-            <span>&bull;</span>
-            <span>Rác Vô cơ: +3đ</span>
-          </div>
-          <div>
-            Hệ thống phân loại rác tích điểm chống gian lận
+          <div className="text-slate-500 text-[11px] whitespace-nowrap">
+            EcoSort AI &bull; Dự án STEM Bảo Vệ Môi Trường
           </div>
         </div>
       </footer>

@@ -24,7 +24,6 @@ import {
   signUpWithSupabase,
   signOutSupabase
 } from '../lib/supabase';
-import { isGoogleSheetsConfigured, registerPlayerToGoogleSheets } from '../lib/googleSheets';
 import { playClickSound } from '../utils/audio';
 
 interface LoginModalProps {
@@ -34,7 +33,6 @@ interface LoginModalProps {
   onLogin: (profile: UserProfile) => void;
   onLogout?: () => void;
   onOpenSqlGuide?: () => void;
-  onOpenGoogleSheets?: () => void;
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({
@@ -91,14 +89,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       createdAt: Date.now(),
     };
 
-    // 1. Sync to Google Sheets if configured
-    registerPlayerToGoogleSheets({
-      playerName: profile.name,
-      organization: profile.organization,
-      avatar: profile.avatar,
-    }).catch((err) => console.log('Sheets quick play notice:', err));
-
-    // 2. Upsert to Supabase players table if connected
+    // Upsert to Supabase players table if connected
     if (supabaseReady) {
       try {
         const client = getSupabase();
@@ -177,12 +168,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         }
 
         if (user) {
-          registerPlayerToGoogleSheets({
-            playerName: user.name,
-            organization: user.organization || '',
-            avatar: user.avatar || '🌱',
-          }).catch((e) => console.log('Sheets auto-sync notice:', e));
-
           setSuccessMsg('Đăng ký tài khoản thành công! Điểm khởi tạo: 0 điểm.');
           setTimeout(() => {
             onLogin(user);
@@ -210,12 +195,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         }
 
         if (user) {
-          registerPlayerToGoogleSheets({
-            playerName: user.name,
-            organization: user.organization || '',
-            avatar: user.avatar || '🌱',
-          }).catch((e) => console.log('Sheets auto-sync notice:', e));
-
           setSuccessMsg(`Chào mừng trở lại, ${user.name}!`);
           setTimeout(() => {
             onLogin(user);
@@ -223,7 +202,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         }
       }
     } else {
-      // 2. GOOGLE SHEETS & LOCAL FALLBACK MODE
+      // 2. LOCAL FALLBACK MODE
       const nameToUse = authMode === 'signup' ? username.trim() : email.split('@')[0];
       const profile: UserProfile = {
         id: 'user-' + Date.now(),
@@ -238,12 +217,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         inorganicCount: 0,
         createdAt: Date.now(),
       };
-
-      registerPlayerToGoogleSheets({
-        playerName: profile.name,
-        organization: profile.organization,
-        avatar: profile.avatar,
-      }).catch((e) => console.log('Sheets register notice:', e));
 
       setTimeout(() => {
         setLoading(false);
@@ -274,6 +247,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     onLogin(profile);
   };
 
+  const [isSwitchingMode, setIsSwitchingMode] = useState(false);
+
   const handleSignOut = async () => {
     playClickSound();
     setLoading(true);
@@ -284,9 +259,18 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     if (onLogout) {
       onLogout();
     }
-    if (onClose) {
-      onClose();
-    }
+    setIsSwitchingMode(true);
+  };
+
+  const handleSwitchToNewContestant = () => {
+    playClickSound();
+    setUsername('');
+    setEmail('');
+    setPassword('');
+    setError(null);
+    setSuccessMsg(null);
+    setAuthMode('quick');
+    setIsSwitchingMode(true);
   };
 
   return (
@@ -344,8 +328,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           </div>
         </div>
 
-        {/* Current user active card if logged in */}
-        {currentUser ? (
+        {/* Current user active card if logged in and not switching */}
+        {currentUser && !isSwitchingMode ? (
           <div className="space-y-4">
             <div className="p-4 bg-slate-950/80 border-2 border-slate-800 rounded-2xl space-y-2.5">
               <div className="flex items-center justify-between">
@@ -372,6 +356,16 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               </div>
             </div>
 
+            {/* Switch / Add new contestant button */}
+            <button
+              type="button"
+              onClick={handleSwitchToNewContestant}
+              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-emerald-950/40"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Đổi Người Chơi / Đăng Ký Thí Sinh Mới</span>
+            </button>
+
             <div className="flex gap-2">
               <button
                 type="button"
@@ -395,6 +389,19 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           </div>
         ) : (
           <div>
+            {currentUser && isSwitchingMode && (
+              <div className="mb-3 flex items-center justify-between p-2 rounded-xl bg-slate-800/80 border border-slate-700 text-xs">
+                <span className="text-slate-300 truncate">Đang đăng nhập: <strong>{currentUser.name}</strong></span>
+                <button
+                  type="button"
+                  onClick={() => setIsSwitchingMode(false)}
+                  className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-[11px] font-bold transition-all cursor-pointer"
+                >
+                  Quay lại hồ sơ
+                </button>
+              </div>
+            )}
+
             {/* Tab switch: Quick Play vs Sign In vs Sign Up */}
             <div className="grid grid-cols-3 p-1 bg-slate-950 border border-slate-800 rounded-xl mb-4 text-xs font-bold">
               <button

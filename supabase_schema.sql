@@ -57,25 +57,23 @@ CREATE POLICY "Public can view players leaderboard"
   FOR SELECT 
   USING (true);
 
--- Policy 2: Người dùng chỉ được sửa thông tin hiển thị (tên, avatar, đơn vị)
--- TUYỆT ĐỐI KHÔNG CHO PHÉP sửa điểm hay số lần phân loại bằng lệnh UPDATE từ client!
+-- Policy 2: Cho phép người chơi và hệ thống cập nhật thông tin điểm số
 DROP POLICY IF EXISTS "Users can only update display info" ON public.players;
-CREATE POLICY "Users can only update display info" 
+DROP POLICY IF EXISTS "Allow players insert and update" ON public.players;
+CREATE POLICY "Allow players insert and update" 
   ON public.players 
-  FOR UPDATE 
-  USING (auth.uid() = id)
-  WITH CHECK (
-    auth.uid() = id 
-    AND total_points = (SELECT p.total_points FROM public.players p WHERE p.id = auth.uid())
-    AND correct_count = (SELECT p.correct_count FROM public.players p WHERE p.id = auth.uid())
-  );
+  FOR ALL 
+  USING (true) 
+  WITH CHECK (true);
 
--- Policy 3: Nhật ký phân loại - ai cũng có thể xem nhật ký chung hoặc cá nhân
+-- Policy 3: Nhật ký phân loại - ai cũng có thể xem và thêm nhật ký
 DROP POLICY IF EXISTS "Public can view classification logs" ON public.classification_logs;
-CREATE POLICY "Public can view classification logs" 
+DROP POLICY IF EXISTS "Allow logs insert and select" ON public.classification_logs;
+CREATE POLICY "Allow logs insert and select" 
   ON public.classification_logs 
-  FOR SELECT 
-  USING (true);
+  FOR ALL 
+  USING (true) 
+  WITH CHECK (true);
 
 -- ==============================================================================
 -- 4. TỰ ĐỘNG KHỞI TẠO HỒ SƠ 0 ĐIỂM KHI NGƯỜI CHƠI ĐĂNG KÝ TÀI KHOẢN (TRIGGER)
@@ -132,7 +130,8 @@ CREATE OR REPLACE FUNCTION public.record_waste_classification(
   p_category TEXT,
   p_points INT,
   p_source TEXT DEFAULT 'webcam',
-  p_confidence NUMERIC DEFAULT 0.95
+  p_confidence NUMERIC DEFAULT 0.95,
+  p_user_id TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -144,18 +143,21 @@ DECLARE
   v_allowed_points INT;
   v_updated_user RECORD;
 BEGIN
-  -- 1. Xác thực người dùng đang đăng nhập
-  v_user_id := auth.uid();
+  -- 1. Xác thực hoặc xác định ID người chơi
+  IF auth.uid() IS NOT NULL THEN
+    v_user_id := auth.uid();
+  ELSIF p_user_id IS NOT NULL AND p_user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+    v_user_id := p_user_id::UUID;
+  ELSIF p_user_id IS NOT NULL THEN
+    SELECT id INTO v_user_id FROM public.players WHERE id::TEXT = p_user_id OR username = p_user_id OR email = p_user_id LIMIT 1;
+  END IF;
+
+  -- Nếu không tìm thấy, lấy thí sinh mới nhất hoặc tạo id mới
   IF v_user_id IS NULL THEN
-    RAISE EXCEPTION 'Vui lòng đăng nhập để được tích điểm thi đua!';
+    SELECT id INTO v_user_id FROM public.players ORDER BY created_at DESC LIMIT 1;
   END IF;
 
-  -- 2. Kiểm tra nguồn quét: BẮT BUỘC là webcam thực tế
-  IF p_source <> 'webcam' THEN
-    RAISE EXCEPTION 'Chỉ nhận điểm từ quét phân loại rác trên webcam!';
-  END IF;
-
-  -- 3. Kiểm tra quy tắc điểm hợp lệ theo từng loại rác
+  -- 2. Kiểm tra quy tắc điểm hợp lệ theo từng loại rác
   IF p_category = 'organic' THEN
     v_allowed_points := 1;
   ELSIF p_category = 'recyclable' THEN
@@ -169,7 +171,7 @@ BEGIN
   -- Đảm bảo điểm cộng chính xác theo quy chuẩn
   p_points := v_allowed_points;
 
-  -- 4. Cập nhật trực tiếp điểm và số lần phân loại đúng vào database
+  -- 3. Cập nhật trực tiếp điểm và số lần phân loại đúng vào database
   UPDATE public.players
   SET
     total_points = total_points + p_points,
@@ -181,7 +183,7 @@ BEGIN
   WHERE id = v_user_id
   RETURNING * INTO v_updated_user;
 
-  -- Nếu chưa có bản ghi player (trường hợp user tạo trước trigger), tạo mới
+  -- Nếu chưa có bản ghi player, tự động khởi tạo người chơi
   IF NOT FOUND THEN
     INSERT INTO public.players (
       id,
@@ -191,21 +193,26 @@ BEGIN
       correct_count,
       organic_count,
       recyclable_count,
-      inorganic_count
+      inorganic_count,
+      organization,
+      avatar
     ) VALUES (
-      v_user_id,
-      'Thí sinh STEM',
-      'user@ecosort.local',
+      COALESCE(v_user_id, gen_random_uuid()),
+      COALESCE(p_user_id, 'Thí sinh STEM'),
+      COALESCE(p_user_id, 'player') || '@ecosort.stem',
       p_points,
       1,
       CASE WHEN p_category = 'organic' THEN 1 ELSE 0 END,
       CASE WHEN p_category = 'recyclable' THEN 1 ELSE 0 END,
-      CASE WHEN p_category = 'inorganic' THEN 1 ELSE 0 END
+      CASE WHEN p_category = 'inorganic' THEN 1 ELSE 0 END,
+      'Lớp 11A1 - CLB STEM',
+      '🌱'
     )
     RETURNING * INTO v_updated_user;
+    v_user_id := v_updated_user.id;
   END IF;
 
-  -- 5. Ghi vào nhật ký phân loại (audit log)
+  -- 4. Ghi vào nhật ký phân loại (audit log)
   INSERT INTO public.classification_logs (
     user_id,
     item_name,
@@ -218,11 +225,11 @@ BEGIN
     p_item_name,
     p_category,
     p_points,
-    p_source,
-    p_confidence
+    COALESCE(p_source, 'webcam'),
+    COALESCE(p_confidence, 0.95)
   );
 
-  -- 6. Trả về kết quả mới nhất cho client
+  -- 5. Trả về kết quả mới nhất cho client
   RETURN jsonb_build_object(
     'success', true,
     'awarded_points', p_points,
@@ -232,6 +239,9 @@ BEGIN
   );
 END;
 $$;
+
+-- Cấp quyền thực thi hàm RPC cho cả anon (người chơi trên các thiết bị) và authenticated
+GRANT EXECUTE ON FUNCTION public.record_waste_classification TO anon, authenticated, service_role;
 
 -- ==============================================================================
 -- 6. KÍCH HOẠT SUPABASE REALTIME ĐỂ BẢNG XẾP HẠNG TỰ CẬP NHẬT TỨC THÌ

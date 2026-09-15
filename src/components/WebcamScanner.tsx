@@ -4,7 +4,6 @@ import {
   RefreshCw,
   Zap,
   Sparkles,
-  Upload,
   AlertCircle,
   ScanLine,
   Sliders,
@@ -487,17 +486,6 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
                     <RefreshCw className="w-4 h-4" />
                     <span>Thử lại bật Camera</span>
                   </button>
-                  <button
-                    id="btn-upload-fallback"
-                    onClick={() => {
-                      playClickSound();
-                      fileInputRef.current?.click();
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black bg-slate-800 hover:bg-slate-700 text-slate-200 border-2 border-slate-700 active:scale-95 transition-all cursor-pointer"
-                  >
-                    <Upload className="w-4 h-4" />
-                    <span>Tải ảnh rác lên</span>
-                  </button>
                 </div>
               </div>
             ) : (
@@ -535,18 +523,6 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
                   >
                     <Video className="w-5 h-5 text-slate-950" />
                     <span>BẬT CAMERA ĐỂ QUÉT</span>
-                  </button>
-
-                  <button
-                    id="btn-upload-hero"
-                    onClick={() => {
-                      playClickSound();
-                      fileInputRef.current?.click();
-                    }}
-                    className="flex items-center gap-2 px-4 py-3 rounded-2xl font-bold text-xs bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border-2 border-slate-700 hover:border-slate-500 shadow-md active:scale-95 transition-all cursor-pointer"
-                  >
-                    <Upload className="w-4 h-4 text-cyan-400" />
-                    <span>Tải ảnh từ máy</span>
                   </button>
                 </div>
               </div>
@@ -728,18 +704,6 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({
               )}
             </button>
           )}
-
-          <button
-            id="btn-upload-photo"
-            onClick={() => {
-              playClickSound();
-              fileInputRef.current?.click();
-            }}
-            title="Tải ảnh rác có sẵn"
-            className="p-3 rounded-xl bg-slate-800 hover:bg-cyan-950/80 text-slate-200 hover:text-cyan-300 border-2 border-slate-700 hover:border-cyan-400 shadow-md hover:shadow-cyan-500/20 hover:scale-105 active:scale-95 transition-all cursor-pointer"
-          >
-            <Upload className="w-4 h-4" />
-          </button>
         </div>
 
         {/* Anti-Cheat Mode Controls */}

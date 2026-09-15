@@ -1,0 +1,48 @@
+{
+  "players": [
+    {
+      "id": "c8d1c37e-eee1-4bd9-88c3-6c914dcb3a24",
+      "name": "ieeuf luwowng tai",
+      "email": "minhkhoivan108@gmail.com",
+      "organization": "Lớp 11A1 - CLB STEM",
+      "avatar": "🌱",
+      "totalPoints": 7,
+      "correctCount": 0,
+      "organicCount": 0,
+      "recyclableCount": 0,
+      "inorganicCount": 0,
+      "lastActive": 1789396301822,
+      "createdAt": 1789184434377
+    },
+    {
+      "id": "03f4d4b8-d8eb-416f-b01c-f324aea5ad85",
+      "name": "A.Nguyên",
+      "email": "buiducannguyeen@gmail.com",
+      "organization": "Lớp 11A1 - CLB STEM",
+      "avatar": "⚡",
+      "totalPoints": 0,
+      "correctCount": 0,
+      "organicCount": 0,
+      "recyclableCount": 0,
+      "inorganicCount": 0,
+      "lastActive": 1789184523471,
+      "createdAt": 1789184523471
+    },
+    {
+      "id": "471bd943-1b68-4bb4-bbb9-f35b66674dfd",
+      "name": "stemplayer5734",
+      "email": "stemplayer5734@gmail.com",
+      "organization": "Khối Sáng Tạo STEM",
+      "avatar": "🌱",
+      "totalPoints": 0,
+      "correctCount": 0,
+      "organicCount": 0,
+      "recyclableCount": 0,
+      "inorganicCount": 0,
+      "lastActive": 1789363452529,
+      "createdAt": 1789363452529
+    }
+  ],
+  "history": [],
+  "reports": []
+}

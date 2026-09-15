@@ -3,6 +3,22 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import {
+  initStore,
+  getLeaderboard,
+  upsertPlayer,
+  recordClassification,
+  getHistory,
+  subscribeToStoreUpdates,
+  getWasteReports,
+  addWasteReport,
+  deleteWasteReport,
+  clearAllWasteReports,
+  updateWasteReportStatus,
+  upvoteWasteReport,
+  StoredWasteReport,
+} from "./server/store";
+import { moderateWasteReport } from "./server/moderation";
 
 dotenv.config();
 
@@ -87,8 +103,8 @@ Yêu cầu trả về JSON chuẩn theo schema:
 - spoofReason: chuỗi mô tả nếu phát hiện gian lận màn hình.
 ${hint ? `Gợi ý nhận diện từ hệ thống: ${hint}` : ""}`;
 
-        const response = await ai.models.generateContent({
-          model: "gemini-3.8-flash",
+        const generatePromise = ai.models.generateContent({
+          model: "gemini-2.5-flash",
           contents: {
             parts: [
               {
@@ -158,6 +174,13 @@ ${hint ? `Gợi ý nhận diện từ hệ thống: ${hint}` : ""}`;
             },
           },
         });
+
+        // 4-second timeout to guarantee fast scanning on mobile devices
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Gemini Vision timeout after 4s")), 4000)
+        );
+
+        const response: any = await Promise.race([generatePromise, timeoutPromise]);
 
         const rawText = response.text || "{}";
         const result = JSON.parse(rawText);
@@ -252,6 +275,323 @@ ${hint ? `Gợi ý nhận diện từ hệ thống: ${hint}` : ""}`;
     res.status(500).json({ error: "Lỗi xử lý hình ảnh", details: error.message });
   }
 });
+
+// ==============================================================================
+// MULTI-DEVICE SYNCHRONIZATION & REALTIME LEADERBOARD APIS
+// ==============================================================================
+
+// 1. Get current unified leaderboard across all devices
+app.get("/api/leaderboard", (_req, res) => {
+  try {
+    const list = getLeaderboard();
+    res.json({
+      success: true,
+      leaderboard: list,
+      count: list.length,
+      serverTime: Date.now(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. Record waste classification points from any device
+app.post("/api/leaderboard/record", (req, res) => {
+  try {
+    const {
+      userId,
+      userName,
+      email,
+      organization,
+      avatar,
+      itemName,
+      category,
+      points,
+      confidence,
+      source,
+    } = req.body;
+
+    if (!userName || !itemName || !category) {
+      return res.status(400).json({
+        success: false,
+        error: "Thiếu thông tin người chơi hoặc rác quét (userName, itemName, category required)",
+      });
+    }
+
+    const result = recordClassification({
+      userId,
+      userName,
+      email,
+      organization,
+      avatar,
+      itemName,
+      category,
+      points: Number(points) || 1,
+      confidence: Number(confidence) || 0.95,
+      source: source || "webcam",
+    });
+
+    return res.json({
+      success: true,
+      player: result.player,
+      totalPoints: result.player.totalPoints,
+      correctCount: result.player.correctCount,
+      leaderboard: result.leaderboard,
+    });
+  } catch (err: any) {
+    console.error("Lỗi tích điểm đa thiết bị:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3. Register or sync player profile across all devices
+app.post("/api/players/register", (req, res) => {
+  try {
+    const { id, name, email, organization, avatar, totalPoints } = req.body;
+    if (!name) {
+      return res.status(400).json({ success: false, error: "Tên người chơi không được để trống" });
+    }
+
+    const player = upsertPlayer({
+      id,
+      name,
+      email,
+      organization,
+      avatar,
+      totalPoints: Number(totalPoints) || 0,
+    });
+
+    return res.json({
+      success: true,
+      player,
+      leaderboard: getLeaderboard(),
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 4. Server-Sent Events (SSE) Real-time Stream for instantaneous multi-device updates
+app.get("/api/leaderboard/stream", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  (res as any).flushHeaders?.();
+
+  // Send initial snapshot
+  const initialPayload = JSON.stringify({
+    type: "init",
+    leaderboard: getLeaderboard(),
+    timestamp: Date.now(),
+  });
+  res.write(`data: ${initialPayload}\n\n`);
+
+  // Subscribe to central store updates
+  const unsubscribe = subscribeToStoreUpdates((event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+
+  // Keep-alive heartbeat every 20 seconds
+  const heartbeat = setInterval(() => {
+    res.write(`: heartbeat ${Date.now()}\n\n`);
+  }, 20000);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+    res.end();
+  });
+});
+
+// 5. Get shared classification history
+app.get("/api/history", (req, res) => {
+  const limit = Math.min(100, Math.max(10, Number(req.query.limit) || 50));
+  res.json({
+    success: true,
+    history: getHistory(limit),
+  });
+});
+
+// ==============================================================================
+// WASTE REPORTS API (PHẢN ÁNH TÌNH TRẠNG RÁC THẢI CÓ KIỂM DUYỆT AI)
+// ==============================================================================
+
+// 1. Get public approved waste reports
+app.get("/api/waste-reports", (req, res) => {
+  try {
+    const status = req.query.status as string;
+    const onlyApproved = req.query.all !== "true"; // Defaults to ONLY approved reports
+    const reports = getWasteReports({ onlyApproved, status });
+    return res.json({
+      success: true,
+      reports,
+      totalCount: reports.length,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. Submit new waste report with AI Moderation
+app.post("/api/waste-reports/submit", async (req, res) => {
+  try {
+    const {
+      image,
+      description,
+      location,
+      authorName,
+      authorAvatar,
+      authorOrg,
+      authorId,
+    } = req.body;
+
+    // Field validations
+    if (!image) {
+      return res.status(400).json({
+        success: false,
+        error: "Vui lòng đính kèm hình ảnh phản ánh tình trạng rác thải.",
+      });
+    }
+
+    if (!location || location.trim().length < 3) {
+      return res.status(400).json({
+        success: false,
+        error: "Vui lòng cung cấp khu vực / địa điểm cụ thể xảy ra tình trạng rác thải.",
+      });
+    }
+
+    const words = description.trim().split(/\s+/).filter(Boolean);
+    if (words.length < 15) {
+      return res.status(400).json({
+        success: false,
+        error: `Nội dung mô tả quá ngắn (${words.length}/15 từ). Quy định cộng đồng yêu cầu bài phản ánh phải có trên 15 từ để tránh bài đăng rác/spam.`,
+      });
+    }
+
+    // Run AI & Multimodal Moderation
+    const ai = getAI();
+    const moderation = await moderateWasteReport(ai, {
+      image,
+      description: description.trim(),
+      location: location.trim(),
+    });
+
+    // CRITICAL: If moderation fails, REJECT and DO NOT publish
+    if (!moderation.approved) {
+      return res.status(422).json({
+        success: false,
+        approved: false,
+        rejectionReason:
+          moderation.rejectionReason ||
+          "Hình ảnh hoặc nội dung không đạt yêu cầu kiểm duyệt. Vui lòng kiểm tra lại hình ảnh rác thải và nội dung phản ánh.",
+        moderationDetails: moderation,
+      });
+    }
+
+    // Moderation approved -> create and persist report
+    const newReport: StoredWasteReport = {
+      id: "rep-" + Date.now() + "-" + Math.random().toString(36).substring(2, 6),
+      authorId: authorId || "citizen-" + Date.now(),
+      authorName: (authorName || "").trim() || "Người dân cộng đồng",
+      authorAvatar: authorAvatar || "🌱",
+      authorOrg: authorOrg || "Khu dân cư",
+      location: location.trim(),
+      description: description.trim(),
+      imageUrl: image,
+      wasteTypeDetected: moderation.wasteTypeDetected,
+      severityLevel: moderation.severityLevel,
+      moderationStatus: "approved",
+      moderationDetails: {
+        approved: true,
+        imageCheckPassed: true,
+        textCheckPassed: true,
+        isAIGenerated: false,
+        aiAuthenticityPassed: true,
+        wasteTypeDetected: moderation.wasteTypeDetected,
+        severityLevel: moderation.severityLevel,
+        summary: moderation.summary,
+        checkedAt: Date.now(),
+        moderatedBy: moderation.moderatedBy,
+      },
+      status: "reported",
+      createdAt: Date.now(),
+      upvotes: 1,
+    };
+
+    const saved = addWasteReport(newReport);
+
+    return res.json({
+      success: true,
+      approved: true,
+      report: saved,
+      message: "Bài phản ánh đã vượt qua kiểm duyệt AI thành công và đã được công khai trên hệ thống!",
+    });
+  } catch (err: any) {
+    console.error("Lỗi kiểm duyệt và gửi phản ánh rác:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Đã xảy ra lỗi trong quá trình kiểm duyệt bài đăng: " + err.message,
+    });
+  }
+});
+
+// 3. Upvote a waste report
+app.post("/api/waste-reports/:id/upvote", (req, res) => {
+  try {
+    const { id } = req.params;
+    const updated = upvoteWasteReport(id);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: "Không tìm thấy bài phản ánh" });
+    }
+    return res.json({ success: true, report: updated });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 4. Update status (e.g. 'investigating' | 'resolved') with resolution note
+app.post("/api/waste-reports/:id/status", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, resolutionNote } = req.body;
+    if (!['reported', 'investigating', 'resolved'].includes(status)) {
+      return res.status(400).json({ success: false, error: "Trạng thái không hợp lệ" });
+    }
+    const updated = updateWasteReportStatus(id, status, resolutionNote);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: "Không tìm thấy bài phản ánh" });
+    }
+    return res.json({ success: true, report: updated });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 5. Delete a waste report (for author or cleanup)
+app.delete("/api/waste-reports/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = deleteWasteReport(id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, error: "Không tìm thấy bài phản ánh để xóa" });
+    }
+    return res.json({ success: true, message: "Đã xóa bài phản ánh thành công", id });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6. Clear all waste reports (reset to 100% clean real data)
+app.post("/api/waste-reports/clear-all", (_req, res) => {
+  try {
+    clearAllWasteReports();
+    return res.json({ success: true, message: "Đã xóa toàn bộ dữ liệu phản ánh rác thải, sẵn sàng cho dữ liệu thực tế mới." });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 // ==============================================================================
 // GOOGLE SHEETS PROXY API
@@ -442,6 +782,13 @@ app.post("/api/sheets/register", async (req, res) => {
 });
 
 async function startServer() {
+  // Initialize multi-device store and sync with Supabase
+  try {
+    await initStore();
+  } catch (err) {
+    console.warn("Notice initializing central store:", err);
+  }
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

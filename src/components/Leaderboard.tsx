@@ -9,14 +9,10 @@ import {
   UserPlus,
   Database,
   CheckCircle2,
-  Code,
-  FileSpreadsheet,
   Sparkles
 } from 'lucide-react';
 import { LeaderboardEntry, UserProfile } from '../types';
 import { playClickSound } from '../utils/audio';
-import { isSupabaseConfigured } from '../lib/supabase';
-import { isGoogleSheetsConfigured } from '../lib/googleSheets';
 
 interface LeaderboardProps {
   entries: LeaderboardEntry[];
@@ -24,8 +20,6 @@ interface LeaderboardProps {
   onRefreshOnline?: () => void;
   onAddNewUser: () => void;
   onOpenSqlGuide?: () => void;
-  onOpenGoogleSheets?: () => void;
-  isGoogleSheetsActive?: boolean;
   isLoading?: boolean;
 }
 
@@ -34,50 +28,116 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
   currentUser,
   onRefreshOnline,
   onAddNewUser,
-  onOpenSqlGuide,
-  onOpenGoogleSheets,
-  isGoogleSheetsActive = false,
   isLoading = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const isOnlineDb = isGoogleSheetsActive || isGoogleSheetsConfigured() || isSupabaseConfigured();
 
-  const filteredEntries = entries.filter(
+  // Calculate true competition ranks:
+  // - Contestants with points > 0: top 1, 2, 3 receive Gold/Silver/Bronze badges
+  // - Contestants with identical points & correctCount share the SAME rank number (Đồng hạng)
+  // - Contestants with 0 points: ranked neatly with neutral badge (no Crown/Medal to avoid false podiums)
+  const rankedEntries = React.useMemo(() => {
+    let currentRank = 1;
+    const result: (LeaderboardEntry & { displayRank: number; isTied: boolean; hasScore: boolean })[] = [];
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const hasScore = (entry.totalPoints || 0) > 0;
+
+      if (i > 0) {
+        const prev = entries[i - 1];
+        const isSameScore =
+          (entry.totalPoints || 0) === (prev.totalPoints || 0) &&
+          (entry.correctCount || 0) === (prev.correctCount || 0);
+
+        if (isSameScore) {
+          result.push({
+            ...entry,
+            displayRank: currentRank,
+            isTied: true,
+            hasScore,
+          });
+          if (result[i - 1]) {
+            result[i - 1].isTied = true;
+          }
+          continue;
+        } else {
+          currentRank = i + 1;
+        }
+      } else {
+        currentRank = 1;
+      }
+
+      result.push({
+        ...entry,
+        displayRank: currentRank,
+        isTied: false,
+        hasScore,
+      });
+    }
+
+    return result;
+  }, [entries]);
+
+  const filteredRankedEntries = rankedEntries.filter(
     (e) =>
       e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (e.organization && e.organization.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (e.email && e.email.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
-  // Find current user rank
-  const currentUserRankIndex = entries.findIndex(
+  // Find current user in rankedEntries
+  const currentUserRankEntry = rankedEntries.find(
     (e) => e.isCurrentUser || (currentUser && e.id === currentUser.id)
   );
 
-  const getRankBadge = (index: number) => {
-    switch (index) {
-      case 0:
-        return (
-          <div className="flex items-center justify-center w-7 h-7 rounded-xl bg-gradient-to-br from-amber-400 to-yellow-600 text-slate-950 font-black shadow-md shadow-amber-500/20">
-            <Crown className="w-4 h-4" />
-          </div>
-        );
+  const renderRankBadge = (entry: (typeof rankedEntries)[0]) => {
+    if (!entry.hasScore) {
+      return (
+        <div
+          title={`Thí sinh mới khởi tạo (0 điểm)${entry.isTied ? ' - Đồng hạng' : ''}`}
+          className="flex items-center justify-center w-7 h-7 rounded-xl bg-slate-800/90 border border-slate-700/60 text-slate-400 font-mono font-bold text-xs"
+        >
+          #{entry.displayRank}
+        </div>
+      );
+    }
+
+    switch (entry.displayRank) {
       case 1:
         return (
-          <div className="flex items-center justify-center w-7 h-7 rounded-xl bg-gradient-to-br from-slate-200 to-slate-400 text-slate-950 font-black shadow-md shadow-slate-300/20">
-            <Medal className="w-4 h-4" />
+          <div
+            title={`Hạng 1 - Quán quân (${entry.totalPoints} điểm)${entry.isTied ? ' - Đồng hạng 1' : ''}`}
+            className="flex items-center justify-center w-7 h-7 rounded-xl bg-gradient-to-br from-amber-400 to-yellow-600 text-slate-950 font-black shadow-md shadow-amber-500/30 ring-1 ring-amber-300/40"
+          >
+            <Crown className="w-4 h-4" />
           </div>
         );
       case 2:
         return (
-          <div className="flex items-center justify-center w-7 h-7 rounded-xl bg-gradient-to-br from-amber-600 to-orange-700 text-white font-black shadow-md shadow-amber-700/20">
+          <div
+            title={`Hạng 2 - Á quân (${entry.totalPoints} điểm)${entry.isTied ? ' - Đồng hạng 2' : ''}`}
+            className="flex items-center justify-center w-7 h-7 rounded-xl bg-gradient-to-br from-slate-200 to-slate-400 text-slate-950 font-black shadow-md shadow-slate-300/30 ring-1 ring-slate-100/40"
+          >
+            <Medal className="w-4 h-4" />
+          </div>
+        );
+      case 3:
+        return (
+          <div
+            title={`Hạng 3 - Quý quân (${entry.totalPoints} điểm)${entry.isTied ? ' - Đồng hạng 3' : ''}`}
+            className="flex items-center justify-center w-7 h-7 rounded-xl bg-gradient-to-br from-amber-600 to-orange-700 text-white font-black shadow-md shadow-amber-700/30 ring-1 ring-amber-400/40"
+          >
             <Medal className="w-4 h-4" />
           </div>
         );
       default:
         return (
-          <div className="flex items-center justify-center w-7 h-7 rounded-xl bg-slate-800 text-slate-400 font-mono font-bold text-xs">
-            #{index + 1}
+          <div
+            title={`Hạng ${entry.displayRank}${entry.isTied ? ' - Đồng hạng' : ''}`}
+            className="flex items-center justify-center w-7 h-7 rounded-xl bg-slate-800 text-slate-300 border border-slate-700/80 font-mono font-bold text-xs"
+          >
+            #{entry.displayRank}
           </div>
         );
     }
@@ -101,34 +161,6 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
                   <span>BẢNG XẾP HẠNG STEM</span>
                   <Flame className="w-4 h-4 text-amber-400 animate-pulse" />
                 </h3>
-                {onOpenGoogleSheets ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      playClickSound();
-                      onOpenGoogleSheets();
-                    }}
-                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border cursor-pointer transition-all hover:scale-105 active:scale-95 ${
-                      isGoogleSheetsActive || isGoogleSheetsConfigured()
-                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 hover:bg-emerald-500/30'
-                        : 'bg-amber-500/20 text-amber-300 border-amber-500/50 hover:bg-amber-500/30'
-                    }`}
-                  >
-                    <FileSpreadsheet className="w-3 h-3 text-emerald-400" />
-                    <span>{isGoogleSheetsActive || isGoogleSheetsConfigured() ? 'Google Sheets Live' : 'Kết nối Google Sheets'}</span>
-                  </button>
-                ) : (
-                  <span
-                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.2 rounded-full border ${
-                      isOnlineDb
-                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                        : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                    }`}
-                  >
-                    <FileSpreadsheet className="w-3 h-3" />
-                    {isOnlineDb ? 'Google Sheets Live' : 'Chưa gắn URL'}
-                  </span>
-                )}
               </div>
               <p className="text-[11px] text-slate-400 font-medium">
                 Tự động đồng bộ nhiều thiết bị &bull; Điểm cao xếp trên
@@ -138,32 +170,6 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
 
           {/* Quick Actions */}
           <div className="flex items-center gap-1.5">
-            {onOpenGoogleSheets && (
-              <button
-                onClick={() => {
-                  playClickSound();
-                  onOpenGoogleSheets();
-                }}
-                title="Cấu hình Google Sheets và lấy mã Apps Script"
-                className="p-2 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/50 text-emerald-300 hover:text-white transition-all cursor-pointer"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-              </button>
-            )}
-
-            {onOpenSqlGuide && (
-              <button
-                onClick={() => {
-                  playClickSound();
-                  onOpenSqlGuide();
-                }}
-                title="Xem mã SQL Database"
-                className="p-2 rounded-xl bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/50 text-cyan-300 hover:text-white transition-all cursor-pointer"
-              >
-                <Code className="w-3.5 h-3.5" />
-              </button>
-            )}
-
             <button
               onClick={() => {
                 playClickSound();
@@ -183,7 +189,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
                   onRefreshOnline();
                 }}
                 disabled={isLoading}
-                title="Đồng bộ lại từ Google Sheets"
+                title="Làm mới bảng xếp hạng trực tuyến"
                 className="p-2 rounded-xl text-slate-400 hover:text-emerald-300 hover:bg-slate-850 border border-slate-700/80 hover:border-emerald-500/50 hover:scale-105 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
               >
                 <RotateCcw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
@@ -220,32 +226,36 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
 
       {/* Current User Standing Banner */}
       {currentUser && (
-        <div className="px-4 py-2.5 bg-emerald-950/40 border-b border-emerald-500/30 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-base select-none">{currentUser.avatar}</span>
-            <div>
-              <div className="font-bold text-emerald-300 flex items-center gap-1.5">
-                <span>Bạn: {currentUser.name}</span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono font-bold">
-                  HẠNG #{currentUserRankIndex >= 0 ? currentUserRankIndex + 1 : '—'}
+        <div className="px-4 py-2.5 bg-emerald-950/60 border-b border-emerald-500/40 flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="text-xl select-none flex-shrink-0">{currentUser.avatar}</span>
+            <div className="min-w-0">
+              <div className="font-bold text-emerald-200 flex items-center gap-1.5 flex-wrap">
+                <span className="truncate max-w-[140px] sm:max-w-[180px]">Bạn: {currentUser.name}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300 border border-emerald-500/50 font-mono font-bold flex-shrink-0">
+                  {currentUser.totalPoints > 0
+                    ? `HẠNG #${currentUserRankEntry?.displayRank ?? 1}${currentUserRankEntry?.isTied ? ' (ĐỒNG HẠNG)' : ''}`
+                    : currentUserRankEntry?.displayRank
+                    ? `HẠNG #${currentUserRankEntry.displayRank} (0đ)`
+                    : 'KHỞI TẠO (0đ)'}
                 </span>
               </div>
-              <div className="text-[10px] text-slate-400 flex items-center gap-2">
-                <span>{currentUser.organization}</span>
+              <div className="text-[10px] text-slate-400 flex items-center gap-1.5 truncate mt-0.5">
+                <span className="truncate max-w-[120px]">{currentUser.organization || 'Thí sinh STEM'}</span>
                 <span>•</span>
-                <span>Đúng: <strong className="text-emerald-300">{currentUser.correctCount || 0} lần</strong></span>
+                <span className="flex-shrink-0">Đúng: <strong className="text-emerald-300">{currentUser.correctCount || 0} lần</strong></span>
               </div>
             </div>
           </div>
-          <div className="font-mono font-extrabold text-sm text-emerald-400 bg-emerald-900/60 px-2.5 py-1 rounded-lg border border-emerald-500/40">
-            {currentUser.totalPoints} đ
+          <div className="flex-shrink-0 font-mono font-black text-sm text-emerald-300 bg-emerald-900/80 px-3 py-1.5 rounded-xl border border-emerald-500/60 shadow-inner">
+            {currentUser.totalPoints ?? 0} đ
           </div>
         </div>
       )}
 
       {/* Ranking List */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2 max-h-[480px]">
-        {filteredEntries.length === 0 ? (
+        {filteredRankedEntries.length === 0 ? (
           <div className="py-12 px-4 text-center">
             <div className="w-12 h-12 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-center mx-auto mb-3 text-slate-400">
               <Trophy className="w-6 h-6 text-slate-500" />
@@ -268,7 +278,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
             </button>
           </div>
         ) : (
-          filteredEntries.map((entry, index) => {
+          filteredRankedEntries.map((entry) => {
             const isMe =
               entry.isCurrentUser || (currentUser && entry.id === currentUser.id);
 
@@ -278,45 +288,50 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
                 className={`p-2.5 rounded-xl border transition-all flex items-center gap-3 ${
                   isMe
                     ? 'bg-emerald-950/50 border-emerald-500/60 shadow-md shadow-emerald-950/40 ring-1 ring-emerald-500/40'
-                    : index < 3
+                    : entry.displayRank <= 3 && entry.hasScore
                     ? 'bg-slate-950/70 border-slate-800 hover:border-slate-700'
                     : 'bg-slate-950/40 border-slate-850 hover:border-slate-800'
                 }`}
               >
                 {/* Rank Badge */}
-                <div className="flex-shrink-0">{getRankBadge(index)}</div>
+                <div className="flex-shrink-0">{renderRankBadge(entry)}</div>
 
                 {/* Avatar */}
                 <div className="text-xl select-none flex-shrink-0">{entry.avatar}</div>
 
                 {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-xs font-bold truncate ${isMe ? 'text-emerald-200' : 'text-slate-200'}`}>
+                <div className="flex-1 min-w-0 pr-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`text-xs font-bold truncate max-w-[140px] sm:max-w-[190px] ${isMe ? 'text-emerald-200 font-extrabold' : 'text-slate-200'}`}>
                       {entry.name}
                     </span>
                     {isMe && (
-                      <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-emerald-500 text-slate-950">
+                      <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-500 text-slate-950 flex-shrink-0 shadow-sm">
                         BẠN
                       </span>
                     )}
+                    {entry.isTied && (
+                      <span className="text-[9px] font-medium px-1 py-0.2 rounded bg-slate-800/90 text-slate-400 border border-slate-700/60 flex-shrink-0">
+                        Đồng hạng
+                      </span>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2 text-[10px] text-slate-400 truncate mt-0.5">
-                    <span className="truncate">{entry.organization}</span>
+                  <div className="flex items-center gap-1.5 text-[10px] text-slate-400 truncate mt-0.5">
+                    <span className="truncate max-w-[120px]">{entry.organization || 'Thí sinh STEM'}</span>
                     <span>•</span>
-                    <span className="text-emerald-400/90 font-medium flex items-center gap-1">
+                    <span className="text-emerald-400 font-medium flex items-center gap-1 flex-shrink-0">
                       <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
                       {entry.correctCount || 0} lần đúng
                     </span>
                   </div>
                 </div>
 
-                {/* Points */}
-                <div className="flex-shrink-0 text-right">
-                  <div className="font-mono font-extrabold text-sm text-amber-400">
-                    {entry.totalPoints}
+                {/* Points: fixed min-width to never get squished or hidden */}
+                <div className="flex-shrink-0 min-w-[70px] text-right bg-slate-950/80 px-2.5 py-1.5 rounded-xl border border-slate-800 shadow-sm">
+                  <div className="font-mono font-extrabold text-sm text-amber-400 leading-tight">
+                    {entry.totalPoints ?? 0}
                   </div>
-                  <div className="text-[9px] uppercase font-bold text-slate-500">điểm</div>
+                  <div className="text-[9px] uppercase font-bold text-slate-400 leading-none mt-0.5">điểm</div>
                 </div>
               </div>
             );
