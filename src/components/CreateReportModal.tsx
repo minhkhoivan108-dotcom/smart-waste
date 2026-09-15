@@ -29,7 +29,7 @@ interface CreateReportModalProps {
 
 /**
  * Automatically compress and downscale photos to max 1920px JPEG
- * Accommodates large photos up to 100MB while keeping high clarity for Gemini Vision and fast submission
+ * Accommodates large photos up to 500MB while keeping high clarity for Gemini Vision and fast submission
  */
 function compressImage(fileOrDataUrl: File | string, maxDim = 1920, quality = 0.86): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -208,7 +208,7 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
     }
   };
 
-  const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
+  const MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024; // 500MB (Nâng cấp dung lượng tối đa)
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -219,7 +219,7 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
     }
 
     if (file.size > MAX_UPLOAD_SIZE_BYTES) {
-      alert('Dung lượng tệp ảnh quá lớn. Hệ thống hỗ trợ tải lên ảnh tối đa 100MB.');
+      alert('Dung lượng tệp ảnh quá lớn. Hệ thống hỗ trợ tải lên ảnh tối đa 500MB.');
       return;
     }
 
@@ -540,7 +540,7 @@ export const CreateReportModal: React.FC<CreateReportModalProps> = ({
                     <Upload className="w-6 h-6" />
                   </div>
                   <span className="font-bold text-xs">Tải ảnh từ máy tính / điện thoại</span>
-                  <span className="text-[11px] text-slate-400">Hỗ trợ JPG, PNG, WebP (Tối đa 100MB)</span>
+                  <span className="text-[11px] text-slate-400">Hỗ trợ JPG, PNG, WebP (Tối đa 500MB)</span>
                 </button>
               </div>
             )}

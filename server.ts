@@ -17,6 +17,7 @@ import {
   clearAllWasteReports,
   updateWasteReportStatus,
   upvoteWasteReport,
+  syncLeaderboardFromSupabase,
   StoredWasteReport,
 } from "./server/store";
 import { moderateWasteReport } from "./server/moderation";
@@ -26,9 +27,9 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-// Support larger payload for images and webcam base64 (Upgraded to 100MB)
-app.use(express.json({ limit: "100mb" }));
-app.use(express.urlencoded({ limit: "100mb", extended: true }));
+// Support larger payload for images and webcam base64 (Upgraded to 500MB)
+app.use(express.json({ limit: "500mb" }));
+app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
 // Express JSON body error handler - return pure JSON instead of default HTML error page
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -36,7 +37,7 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
     return res.status(413).json({
       success: false,
       approved: false,
-      error: 'Dung lượng hình ảnh gửi lên quá lớn (vượt quá giới hạn 100MB). Vui lòng chọn ảnh có kích thước dưới 100MB.',
+      error: 'Dung lượng hình ảnh gửi lên quá lớn (vượt quá giới hạn 500MB). Vui lòng chọn ảnh có kích thước dưới 500MB.',
     });
   }
   if (err instanceof SyntaxError && 'body' in err) {
@@ -301,9 +302,10 @@ ${hint ? `Gợi ý nhận diện từ hệ thống: ${hint}` : ""}`;
 // MULTI-DEVICE SYNCHRONIZATION & REALTIME LEADERBOARD APIS
 // ==============================================================================
 
-// 1. Get current unified leaderboard across all devices
-app.get("/api/leaderboard", (_req, res) => {
+// 1. Get current unified leaderboard across all devices (direct from Supabase database)
+app.get("/api/leaderboard", async (_req, res) => {
   try {
+    await syncLeaderboardFromSupabase();
     const list = getLeaderboard();
     res.json({
       success: true,

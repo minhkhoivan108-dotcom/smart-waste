@@ -156,3 +156,27 @@ export function listenToLeaderboardStream(
     }
   };
 }
+
+/**
+ * Reset all players' points and stats to 0 across Supabase and server
+ */
+export async function resetAllPlayersPointsOnServer(): Promise<{
+  success: boolean;
+  message?: string;
+  error?: string;
+  leaderboard?: LeaderboardEntry[];
+}> {
+  try {
+    const res = await fetch('/api/players/reset-all-points', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err.message || 'Lỗi kết nối khi đặt lại điểm',
+    };
+  }
+}

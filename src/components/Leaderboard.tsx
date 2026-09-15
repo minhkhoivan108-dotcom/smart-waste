@@ -9,7 +9,8 @@ import {
   UserPlus,
   Database,
   CheckCircle2,
-  Sparkles
+  Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { LeaderboardEntry, UserProfile } from '../types';
 import { playClickSound } from '../utils/audio';
@@ -20,6 +21,7 @@ interface LeaderboardProps {
   onRefreshOnline?: () => void;
   onAddNewUser: () => void;
   onOpenSqlGuide?: () => void;
+  onResetAllPoints?: () => void;
   isLoading?: boolean;
 }
 
@@ -28,24 +30,37 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
   currentUser,
   onRefreshOnline,
   onAddNewUser,
+  onResetAllPoints,
   isLoading = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [isResetting, setIsResetting] = useState(false);
 
   // Calculate true competition ranks:
   // - Contestants with points > 0: top 1, 2, 3 receive Gold/Silver/Bronze badges
   // - Contestants with identical points & correctCount share the SAME rank number (Đồng hạng)
   // - Contestants with 0 points: ranked neatly with neutral badge (no Crown/Medal to avoid false podiums)
   const rankedEntries = React.useMemo(() => {
+    // Always strictly sort entries by totalPoints DESC, correctCount DESC, then lastActive DESC
+    const sorted = [...entries].sort((a, b) => {
+      const ptsA = a.totalPoints || 0;
+      const ptsB = b.totalPoints || 0;
+      if (ptsB !== ptsA) return ptsB - ptsA;
+      const cntA = a.correctCount || 0;
+      const cntB = b.correctCount || 0;
+      if (cntB !== cntA) return cntB - cntA;
+      return (b.lastActive || 0) - (a.lastActive || 0);
+    });
+
     let currentRank = 1;
     const result: (LeaderboardEntry & { displayRank: number; isTied: boolean; hasScore: boolean })[] = [];
 
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
+    for (let i = 0; i < sorted.length; i++) {
+      const entry = sorted[i];
       const hasScore = (entry.totalPoints || 0) > 0;
 
       if (i > 0) {
-        const prev = entries[i - 1];
+        const prev = sorted[i - 1];
         const isSameScore =
           (entry.totalPoints || 0) === (prev.totalPoints || 0) &&
           (entry.correctCount || 0) === (prev.correctCount || 0);

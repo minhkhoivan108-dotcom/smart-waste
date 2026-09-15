@@ -450,8 +450,8 @@ export function upvoteWasteReport(id: string): StoredWasteReport | null {
 async function syncToSupabase(player: StoredPlayer, historyItem: StoredHistoryItem) {
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    // 1. Try RPC with user id
-    const { error: rpcErr } = await supabase.rpc('record_waste_classification', {
+    // 1. Try RPC with user id (6 params)
+    const { error: rpcErr6 } = await supabase.rpc('record_waste_classification', {
       p_item_name: historyItem.itemName,
       p_category: historyItem.category,
       p_points: historyItem.points,
@@ -460,36 +460,42 @@ async function syncToSupabase(player: StoredPlayer, historyItem: StoredHistoryIt
       p_user_id: player.id,
     });
 
-    if (rpcErr) {
-      // 2. Direct upsert into players
-      await supabase.from('players').upsert({
-        id: player.id,
-        username: player.name,
-        email: player.email,
-        total_points: player.totalPoints,
-        correct_count: player.correctCount,
-        organic_count: player.organicCount,
-        recyclable_count: player.recyclableCount,
-        inorganic_count: player.inorganicCount,
-        avatar: player.avatar,
-        organization: player.organization,
-        updated_at: new Date().toISOString(),
+    if (rpcErr6) {
+      // Try 5 params RPC
+      await supabase.rpc('record_waste_classification', {
+        p_item_name: historyItem.itemName,
+        p_category: historyItem.category,
+        p_points: historyItem.points,
+        p_source: historyItem.source,
+        p_confidence: historyItem.confidence,
       });
     }
+
+    // 2. Direct table update on players
+    await supabase.from('players').update({
+      total_points: player.totalPoints,
+      correct_count: player.correctCount,
+      organic_count: player.organicCount,
+      recyclable_count: player.recyclableCount,
+      inorganic_count: player.inorganicCount,
+      updated_at: new Date().toISOString(),
+    }).eq('id', player.id);
   } catch (e) {
-    // Non-fatal, local server store is authoritative for all devices
+    // Non-fatal, local server store is secondary
   }
 }
 
-// Preload existing Supabase players into memory on startup
-export async function initStore(): Promise<void> {
-  const loaded = loadDataFromDisk();
-
+// Directly synchronize leaderboard from Supabase players table
+export async function syncLeaderboardFromSupabase(): Promise<void> {
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    const { data: dbPlayers, error } = await supabase.from('players').select('*');
+    const { data: dbPlayers, error } = await supabase
+      .from('players')
+      .select('*')
+      .order('total_points', { ascending: false })
+      .order('correct_count', { ascending: false });
 
-    if (!error && Array.isArray(dbPlayers)) {
+    if (!error && Array.isArray(dbPlayers) && dbPlayers.length > 0) {
       for (const row of dbPlayers) {
         const existing = cachedData.players.find(
           (p) => p.id === row.id || p.name.trim().toLowerCase() === (row.username || '').trim().toLowerCase()
@@ -502,26 +508,36 @@ export async function initStore(): Promise<void> {
             email: row.email || `${row.username || 'player'}@ecosort.stem`,
             organization: row.organization || 'Lớp 11A1 - CLB STEM',
             avatar: row.avatar || '🌱',
-            totalPoints: row.total_points || 0,
-            correctCount: row.correct_count || 0,
-            organicCount: row.organic_count || 0,
-            recyclableCount: row.recyclable_count || 0,
-            inorganicCount: row.inorganic_count || 0,
+            totalPoints: row.total_points ?? 0,
+            correctCount: row.correct_count ?? 0,
+            organicCount: row.organic_count ?? 0,
+            recyclableCount: row.recyclable_count ?? 0,
+            inorganicCount: row.inorganic_count ?? 0,
             lastActive: row.updated_at ? new Date(row.updated_at).getTime() : Date.now(),
             createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
           });
         } else {
-          // If the DB has higher points or if disk was empty, merge safely
-          if (row.total_points > existing.totalPoints) {
-            existing.totalPoints = row.total_points;
-            existing.correctCount = row.correct_count || existing.correctCount;
-          }
+          // Supabase is authoritative source of truth for scores
+          existing.totalPoints = row.total_points ?? 0;
+          existing.correctCount = row.correct_count ?? 0;
+          existing.organicCount = row.organic_count ?? 0;
+          existing.recyclableCount = row.recyclable_count ?? 0;
+          existing.inorganicCount = row.inorganic_count ?? 0;
+          if (row.username) existing.name = row.username;
+          if (row.organization) existing.organization = row.organization;
+          if (row.avatar) existing.avatar = row.avatar;
         }
       }
       saveDataToDisk();
-      console.log(`[EcoSort Store] Initialized with ${cachedData.players.length} players from Supabase/Disk.`);
     }
-  } catch (e) {
-    console.warn('[EcoSort Store] Preload from Supabase notice:', e);
+  } catch (err) {
+    console.warn('[EcoSort Store] Notice syncing from Supabase:', err);
   }
+}
+
+// Preload existing Supabase players into memory on startup
+export async function initStore(): Promise<void> {
+  loadDataFromDisk();
+  await syncLeaderboardFromSupabase();
+  console.log(`[EcoSort Store] Initialized with ${cachedData.players.length} players synchronized from Supabase.`);
 }

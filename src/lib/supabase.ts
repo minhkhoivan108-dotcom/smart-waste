@@ -299,6 +299,19 @@ export async function fetchOnlineLeaderboard(currentUserId?: string): Promise<{
     }
 
     const rows = (data || []) as PlayerRow[];
+    // Strictly sort by total_points DESC, then correct_count DESC, then updated_at DESC
+    rows.sort((a, b) => {
+      const ptsA = Number(a.total_points) || 0;
+      const ptsB = Number(b.total_points) || 0;
+      if (ptsB !== ptsA) return ptsB - ptsA;
+      const cntA = Number(a.correct_count) || 0;
+      const cntB = Number(b.correct_count) || 0;
+      if (cntB !== cntA) return cntB - cntA;
+      const timeA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+      const timeB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+      return timeB - timeA;
+    });
+
     const entries = rows.map((row) => playerRowToLeaderboardEntry(row, currentUserId));
     return { entries, error: null };
   } catch (err: unknown) {
@@ -309,8 +322,9 @@ export async function fetchOnlineLeaderboard(currentUserId?: string): Promise<{
   }
 }
 
-// 6. RECORD WASTE CLASSIFICATION (SECURITY DEFINER RPC CALL)
-// Strict server-side verification: Player cannot manipulate points from browser console
+// 6. RECORD WASTE CLASSIFICATION (SECURITY DEFINER RPC CALL & TABLE UPDATE)
+// Authoritative Supabase Database sync: When any player is awarded points,
+// the new score is written directly to the database and leaderboard updates immediately.
 export async function recordClassificationOnline(params: {
   itemName: string;
   category: WasteCategory;
@@ -319,6 +333,7 @@ export async function recordClassificationOnline(params: {
   confidence?: number;
   userId?: string;
   userName?: string;
+  email?: string;
   organization?: string;
   avatar?: string;
 }): Promise<{
@@ -333,48 +348,70 @@ export async function recordClassificationOnline(params: {
   }
 
   try {
-    const { data, error } = await client.rpc('record_waste_classification', {
+    // 1. Try 5-parameter RPC (active in Supabase security definer)
+    let { data, error } = await client.rpc('record_waste_classification', {
       p_item_name: params.itemName,
       p_category: params.category,
       p_points: params.points,
       p_source: params.source,
       p_confidence: params.confidence || 0.95,
-      p_user_id: params.userId || params.userName,
     });
 
+    // 2. If not found or error, try 6-parameter RPC with p_user_id
     if (error) {
-      // Fallback: If RPC not yet created in Supabase or user logged in via quick-play,
-      // update directly to table 'players' so score is never lost
-      if (params.userId) {
-        try {
-          const { data: pData } = await client
-            .from('players')
-            .select('total_points, correct_count')
-            .eq('id', params.userId)
-            .maybeSingle();
+      const rpc6 = await client.rpc('record_waste_classification', {
+        p_item_name: params.itemName,
+        p_category: params.category,
+        p_points: params.points,
+        p_source: params.source,
+        p_confidence: params.confidence || 0.95,
+        p_user_id: params.userId || params.userName,
+      });
+      if (!rpc6.error) {
+        data = rpc6.data;
+        error = null;
+      }
+    }
 
-          const newPts = (pData?.total_points || 0) + params.points;
-          const newCnt = (pData?.correct_count || 0) + 1;
+    // 3. Fallback: Direct table update in Supabase players table
+    if (error && params.userId) {
+      try {
+        const { data: pData } = await client
+          .from('players')
+          .select('total_points, correct_count, organic_count, recyclable_count, inorganic_count')
+          .eq('id', params.userId)
+          .maybeSingle();
 
-          await client.from('players').upsert({
-            id: params.userId,
-            username: params.userName || 'Thí sinh STEM',
-            organization: params.organization || 'Khối Sáng Tạo STEM',
-            avatar: params.avatar || '🌱',
-            total_points: newPts,
-            correct_count: newCnt,
-            updated_at: new Date().toISOString(),
-          });
+        const currentPts = Number(pData?.total_points) || 0;
+        const currentCnt = Number(pData?.correct_count) || 0;
+        const newPts = currentPts + params.points;
+        const newCnt = currentCnt + 1;
+        const newOrg = (Number(pData?.organic_count) || 0) + (params.category === 'organic' ? 1 : 0);
+        const newRec = (Number(pData?.recyclable_count) || 0) + (params.category === 'recyclable' ? 1 : 0);
+        const newIno = (Number(pData?.inorganic_count) || 0) + (params.category === 'inorganic' ? 1 : 0);
 
+        const { error: updErr } = await client.from('players').update({
+          total_points: newPts,
+          correct_count: newCnt,
+          organic_count: newOrg,
+          recyclable_count: newRec,
+          inorganic_count: newIno,
+          updated_at: new Date().toISOString(),
+        }).eq('id', params.userId);
+
+        if (!updErr) {
           return {
             success: true,
             totalPoints: newPts,
             correctCount: newCnt,
           };
-        } catch (tableErr) {
-          console.warn('Direct table update notice:', tableErr);
         }
+      } catch (tableErr) {
+        console.warn('Direct table update notice:', tableErr);
       }
+    }
+
+    if (error) {
       return { success: false, error: error.message };
     }
 

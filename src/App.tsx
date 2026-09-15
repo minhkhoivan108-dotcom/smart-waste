@@ -95,34 +95,29 @@ export default function App() {
       // 2. Fetch from Central Multi-Device Server
       const serverEntries = await fetchServerLeaderboard();
 
-      // Merge players from both sources
-      const playerMap = new Map<string, LeaderboardEntry>();
+      let list: LeaderboardEntry[] = [];
 
-      // Put Supabase entries
-      for (const entry of supabaseEntries) {
-        playerMap.set(entry.id, entry);
-      }
-
-      // Overwrite/merge with server entries
-      for (const entry of serverEntries) {
-        const existingById = playerMap.get(entry.id);
-        const existingByName = Array.from(playerMap.values()).find(
-          (p) => p.name.trim().toLowerCase() === entry.name.trim().toLowerCase()
-        );
-        const existing = existingById || existingByName;
-
-        if (existing) {
-          existing.totalPoints = Math.max(existing.totalPoints, entry.totalPoints);
-          existing.correctCount = Math.max(existing.correctCount || 0, entry.correctCount || 0);
-          existing.organization = entry.organization || existing.organization;
-          existing.avatar = entry.avatar || existing.avatar;
-          playerMap.set(existing.id, existing);
-        } else {
-          playerMap.set(entry.id, entry);
+      if (supabaseEntries.length > 0) {
+        // SUPABASE IS AUTHORITATIVE: Database points are the direct source of truth
+        const playerMap = new Map<string, LeaderboardEntry>();
+        for (const entry of supabaseEntries) {
+          playerMap.set(entry.id, { ...entry });
         }
-      }
 
-      let list = Array.from(playerMap.values());
+        // Include any server-only players not yet in Supabase
+        for (const entry of serverEntries) {
+          const existsById = playerMap.has(entry.id);
+          const existsByName = Array.from(playerMap.values()).some(
+            (p) => p.name.trim().toLowerCase() === entry.name.trim().toLowerCase()
+          );
+          if (!existsById && !existsByName) {
+            playerMap.set(entry.id, entry);
+          }
+        }
+        list = Array.from(playerMap.values());
+      } else {
+        list = serverEntries;
+      }
 
       // If activeUser is logged in, ensure activeUser is present in the list
       if (activeUser) {
@@ -132,17 +127,12 @@ export default function App() {
 
         if (idx >= 0) {
           list[idx].isCurrentUser = true;
-          // Sync up if local has more points
-          if (activeUser.totalPoints > list[idx].totalPoints) {
-            list[idx].totalPoints = activeUser.totalPoints;
-            list[idx].correctCount = activeUser.correctCount;
-            registerPlayerOnServer(activeUser);
-          } else if (list[idx].totalPoints > activeUser.totalPoints) {
-            // Server has more points
-            const updated = {
+          // Synchronize activeUser with authoritative database points
+          if (list[idx].totalPoints !== activeUser.totalPoints) {
+            const updated: UserProfile = {
               ...activeUser,
               totalPoints: list[idx].totalPoints,
-              correctCount: list[idx].correctCount,
+              correctCount: list[idx].correctCount ?? activeUser.correctCount,
             };
             currentUserRef.current = updated;
             setCurrentUser(updated);
@@ -161,7 +151,6 @@ export default function App() {
             lastActive: Date.now(),
             isCurrentUser: true,
           });
-          registerPlayerOnServer(activeUser);
         }
       }
 
@@ -176,8 +165,12 @@ export default function App() {
 
       // ALWAYS sort by totalPoints DESC, correctCount DESC, then lastActive DESC
       list.sort((a, b) => {
-        if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-        if ((b.correctCount || 0) !== (a.correctCount || 0)) return (b.correctCount || 0) - (a.correctCount || 0);
+        const ptsA = a.totalPoints || 0;
+        const ptsB = b.totalPoints || 0;
+        if (ptsB !== ptsA) return ptsB - ptsA;
+        const cntA = a.correctCount || 0;
+        const cntB = b.correctCount || 0;
+        if (cntB !== cntA) return cntB - cntA;
         return (b.lastActive || 0) - (a.lastActive || 0);
       });
 
@@ -485,8 +478,8 @@ export default function App() {
           console.warn('Central server sync notice:', e);
         });
 
-      // 4. BACKGROUND ONLINE SYNC (Supabase Realtime Database)
-      if (isSupabaseLive) {
+      // 4. SUPABASE ONLINE DATABASE SYNC
+      if (isSupabaseLive || isSupabaseConfigured()) {
         try {
           const onlineRes = await recordClassificationOnline({
             itemName: result.itemName,
@@ -500,18 +493,20 @@ export default function App() {
             avatar: updatedUser.avatar,
           });
 
-          if (onlineRes.success && onlineRes.totalPoints !== undefined && onlineRes.totalPoints > newPoints) {
+          if (onlineRes.success && onlineRes.totalPoints !== undefined) {
             const confirmedUser: UserProfile = {
               ...updatedUser,
               totalPoints: onlineRes.totalPoints,
               correctCount: onlineRes.correctCount ?? updatedUser.correctCount,
             };
+            currentUserRef.current = confirmedUser;
             setCurrentUser(confirmedUser);
             saveUserProfile(confirmedUser);
-            refreshLeaderboardOnline();
           }
+          // Immediately refresh authoritative leaderboard from Supabase and recalculate all rankings
+          await refreshLeaderboardOnline();
         } catch (err) {
-          console.warn('Supabase background sync notice:', err);
+          console.warn('Supabase database sync notice:', err);
         }
       }
     },
